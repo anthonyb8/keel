@@ -270,11 +270,6 @@
     ],
     "defaultMode": "auto"
   },
-  "statusLine": {
-    "type": "command",
-    "command": "input=$(cat); cwd=$(echo \"$input\" | jq -r '.workspace.current_dir'); printf '[%s@%s %s]' \"$(whoami)\" \"$(hostname -s)\" \"$(basename \"$cwd\")\""
-  },
-  "theme": "dark-ansi",
   "hooks": {
     "SessionStart": [
       {
@@ -349,5 +344,10 @@
         ]
       }
     ]
-  }
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "input=$(cat); cwd=$(echo \"$input\" | jq -r '.workspace.current_dir'); printf '[%s@%s %s]' \"$(whoami)\" \"$(hostname -s)\" \"$(basename \"$cwd\")\""
+  },
+  "theme": "dark-ansi"
 }
