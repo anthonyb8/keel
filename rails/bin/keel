@@ -29,6 +29,7 @@
 #   keel run stop done|stopped|failed [--note <text>] [--tree <path>]
 #                             end the run and archive it
 #   keel status --json [path] every run not yet archived, or the one for path; docs/status.md
+#   keel verdict [--json]     the last keel-verifier's verdict for this tree; passes only on a pass at HEAD
 #   keel reflect triage [session] < findings.json
 #                             /reflect's twice rule and level order: accepted, held and rejected
 #   keel eval <playbook> [--variant <keel checkout>] [-n <runs>]
@@ -75,6 +76,7 @@ KEEP_FILE="${KEEL_KEEP:-$HOME/.config/keel/keep}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/keel"
 RUNS_DIR="$STATE_DIR/runs"
 STALE_FILE="$STATE_DIR/stale"
+VERDICTS_DIR="$STATE_DIR/verdicts"
 
 die() {
   echo "keel: $*" >&2
@@ -1194,24 +1196,50 @@ hook_stop() {
 Keep going, or write $dir/giveup.md saying why you are stuck." '{decision: "block", reason: $r}'
 }
 
-# Records a keel-verifier's verdict in the run holding the tree at $1, from
-# its last message: the line `VERDICT: pass` or `VERDICT: fail`, its findings
-# after it. A verifier that ends without the line fails. Only this hook writes
-# the verdict, so the session that did the work never records its own pass.
+# Records a keel-verifier's verdict for the tree at $1, from its last message:
+# the line `VERDICT: pass` or `VERDICT: fail`, its findings after it. A
+# verifier that ends without the line fails. Only this hook writes the
+# verdict, so the session that did the work never records its own pass. It
+# goes to $VERDICTS_DIR for every tree, where `keel verdict` reads it, and
+# into the run as well when an active run holds the tree.
 record_verdict() { # record_verdict <cwd> <last message>
-  local tree dir verdict findings
+  local tree dir verdict findings code
   tree=$(tree_of "$1" 2>/dev/null) || return 0
-  dir=$(run_dir "$tree")
-  [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] || return 0
+  code=$(git -C "$tree" rev-parse 'HEAD^{tree}' 2>/dev/null) || return 0
   verdict=$(grep -oE '^VERDICT: (pass|fail)' <<<"$2" | tail -1 | cut -d' ' -f2 || true)
   findings=$(sed -n '/^VERDICT: /,$p' <<<"$2" | tail -n +2 | head -c 4000)
   if [[ -z "$verdict" ]]; then
     verdict=fail
     findings="the verifier ended without a VERDICT line"
   fi
+  mkdir -p "$VERDICTS_DIR"
+  jq -n --arg v "$verdict" --arg t "$code" --arg p "$tree" --arg now "$(now)" --arg f "$findings" \
+    '{verdict: $v, tree: $t, path: $p, at: $now, findings: $f}' | write_atomic "$VERDICTS_DIR/$(tree_key "$tree").json"
+  dir=$(run_dir "$tree")
+  [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] || return 0
   run_update "$dir" '.verifier = {verdict: $v, tree: $t, at: $now, findings: $f}' \
-    --arg v "$verdict" --arg t "$(git -C "$tree" rev-parse 'HEAD^{tree}')" --arg f "$findings"
-  log_row "$dir" "verifier: $verdict" "a fresh keel-verifier ran the checks" "HEAD^{tree} $(git -C "$tree" rev-parse --short=12 'HEAD^{tree}')" "$verdict" "$([[ "$verdict" == pass ]] || echo yes)"
+    --arg v "$verdict" --arg t "$code" --arg f "$findings"
+  log_row "$dir" "verifier: $verdict" "a fresh keel-verifier ran the checks" "HEAD^{tree} ${code:0:12}" "$verdict" "$([[ "$verdict" == pass ]] || echo yes)"
+}
+
+# Prints the last verdict recorded for the tree holding the current
+# directory, and passes only when it is a pass on the code at HEAD. /ship
+# reads this instead of the session's account of the verifier's reply.
+verdict() { # verdict [--json]
+  local tree file code
+  tree=$(tree_of "$PWD")
+  file="$VERDICTS_DIR/$(tree_key "$tree").json"
+  [[ -f "$file" ]] || die "no verifier has judged $tree: run /verify"
+  if [[ "${1:-}" == "--json" ]]; then
+    cat "$file"
+    return
+  fi
+  code=$(git -C "$tree" rev-parse 'HEAD^{tree}')
+  jq -r '.verdict, "judged \(.tree[0:12]) at \(.at)", (.findings | select(. != ""))' "$file"
+  if [[ "$(jq -r .tree "$file")" != "$code" ]]; then
+    die "the code changed since: HEAD is now ${code:0:12}; /verify again"
+  fi
+  [[ "$(jq -r .verdict "$file")" == pass ]] || die "the verifier failed this code: fix each finding, then /verify again"
 }
 
 # Learning: `keel reflect triage` applies /reflect's twice rule and level
@@ -1289,6 +1317,7 @@ provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
 run) run "$@" ;;
 status) status "$@" ;;
+verdict) verdict "$@" ;;
 reflect) reflect "$@" ;;
 eval) exec "$KEEL_ROOT/learning/eval.sh" "$@" ;;
 linear) linear "$@" ;;

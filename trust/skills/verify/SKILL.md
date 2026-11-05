@@ -20,7 +20,7 @@ Give it no account of why the change is right.
 
 ## 2. Act on the verdict
 
-- `VERDICT: pass`: `keel status --json .` now shows `verifier.verdict` as `pass` against this HEAD's tree. Go on.
+- `VERDICT: pass`: `keel verdict` now passes, and in a run `keel status --json .` shows `verifier.verdict` as `pass` against this HEAD's tree. Go on.
 - `VERDICT: fail`: fix each finding in this session with a test that fails first, as `/write-tests` says, then return to step 1 with a fresh verifier.
 
 Any later change to the code needs `/verify` again: the verdict holds only for the tree it judged.
