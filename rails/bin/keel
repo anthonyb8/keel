@@ -1132,6 +1132,14 @@ run_stop() {
     esac
   done
   dir=$(held_run_dir "$tree" any) || exit 1
+  # A contracted run is done only when its done check has passed on the code
+  # as it stands, which the Stop hook records as the turn ends; the agent
+  # cannot declare it done first.
+  if [[ "$state" == "done" && "$(jq -r '.contract_hash // ""' "$dir/status.json")" != "" ]] &&
+    ! jq -e --arg head "$(git -C "$(jq -r .tree "$dir/status.json")" rev-parse HEAD 2>/dev/null)" \
+      '.done_check.passed == true and .done_check.head == $head' "$dir/status.json" >/dev/null; then
+    die "this run's done check has not passed at HEAD, so it is not done: end your turn and the Stop hook runs it, or stop the run as stopped or failed"
+  fi
   run_archive "$dir" "$state" "$note"
   echo "run $state; archived"
 }

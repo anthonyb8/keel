@@ -687,6 +687,8 @@ eq "and records the pass" "0 true checked" "$(st3 '.[0].done_check | "\(.exit) \
 eq "logged without a flag" "pass|" "$(last_row 6,7)"
 eq "and not counted" "2" "$(st3 '.[0].attention')"
 eq "a pass does not end the run on its own" "active" "$(st3 '.[0].state')"
+git -C "$R3" commit -q --allow-empty -m "after the check"
+refute "a contracted run is not done while its check has not passed at HEAD" in_r3 run stop "done"
 rm "$R3/done.txt"
 sed -i 's/^done: .*/done: touch done.txt/' "$(in_r3 run dir)/contract.md"
 out=$(hook_stop)

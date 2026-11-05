@@ -140,8 +140,8 @@ printf 'goal: proof.txt exists\ndone: test -f proof.txt\nbudget: 15m\ngrants: no
 (cd "$C1" && keel run start --playbook autonomous-run --goal "proof.txt exists" --steps "$T/c-steps.md" --contract "$T/c-contract.md" >/dev/null)
 # The hook's reason quotes only the check's output, which `test -f` leaves
 # empty, so the prompt names the check the session will be held to.
-ask "$C1" "This tree's run is done when \`test -f proof.txt\` passes. For now, reply with only the word READY and do not run any tool." \
-  --allowedTools "Bash(touch proof.txt)" >/dev/null
+ask "$C1" "This tree's run is done when \`test -f proof.txt\` passes. For now, reply with only the word READY and do not run any tool. If you are held, create the file with \`touch proof.txt\`." \
+  --allowedTools "Bash(touch proof.txt),Write" >/dev/null
 # The session may end the run itself once the check passes, as the router
 # says, which archives it; the trail is then the newest archived folder.
 c1_run=$(cd "$C1" && keel run dir 2>/dev/null) ||
