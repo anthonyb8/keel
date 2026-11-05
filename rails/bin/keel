@@ -48,6 +48,7 @@
 #                               worktree-create  WorktreeCreate
 #                               worktree-remove  WorktreeRemove
 #                               subagent-stop    SubagentStop
+#                               handback         PostToolUse on SubagentHandback: a verifier's verdict
 #                               git-guard        PreToolUse on Bash
 #                               stop             Stop: holds a contracted run's turn until its done check passes
 #   keel help                 print this help
@@ -273,8 +274,12 @@ hook_subagent_stop() {
   input=$(cat)
   agent_id=$(jq -r .agent_id <<<"$input")
   cwd=$(jq -r .cwd <<<"$input")
-  if [[ "$(jq -r '.agent_type // ""' <<<"$input")" == keel-verifier ]]; then
-    record_verdict "$cwd" "$(verifier_report "$input")"
+  # A verifier that handed its report back has its verdict recorded already, by
+  # hook_handback: its last message holds no text, and its transcript may not
+  # hold the handback yet when this hook fires.
+  if [[ "$(jq -r '.agent_type // ""' <<<"$input")" == keel-verifier ]] &&
+    [[ "$(jq -r '.handback // ""' 2>/dev/null <"$VERDICTS_DIR/$(tree_key "$(tree_of "$cwd" 2>/dev/null)").json")" != "$agent_id" ]]; then
+    record_verdict "$cwd" "$(jq -r '.last_assistant_message // ""' <<<"$input")"
   fi
   entry=$(pool_entry "$cwd")
   [[ -n "$entry" ]] || return 0
@@ -1196,29 +1201,24 @@ hook_stop() {
 Keep going, or write $dir/giveup.md saying why you are stuck." '{decision: "block", reason: $r}'
 }
 
-# The verifier's report: its last assistant message, or, when that holds no
-# VERDICT line, the last report it handed back through a SubagentHandback tool
-# call, read from its own transcript. A handback leaves the last message with
-# no text, so reading that alone records a passing verifier as a fail.
-verifier_report() { # verifier_report <SubagentStop input>
-  local message transcript
-  message=$(jq -r '.last_assistant_message // ""' <<<"$1")
-  transcript=$(jq -r '.agent_transcript_path // ""' <<<"$1")
-  if ! grep -qE '^VERDICT: ' <<<"$message" && [[ -f "$transcript" ]]; then
-    message=$(jq -rn '[inputs | .message.content[]?
-      | select(.type? == "tool_use" and .name == "SubagentHandback") | .input.message // ""] | last // ""' \
-      "$transcript" 2>/dev/null) || message=""
-  fi
-  printf '%s\n' "$message"
+# PostToolUse on SubagentHandback: a keel-verifier that returns its report
+# through a handback has its verdict recorded from the report itself, as the
+# tool call carries it. Reading it from the verifier's transcript at
+# SubagentStop races the transcript's write, which lands after that hook fires.
+hook_handback() {
+  local input
+  input=$(cat)
+  [[ "$(jq -r '.agent_type // ""' <<<"$input")" == keel-verifier ]] || return 0
+  record_verdict "$(jq -r .cwd <<<"$input")" "$(jq -r '.tool_input.message // ""' <<<"$input")" "$(jq -r '.agent_id // ""' <<<"$input")"
 }
 
-# Records a keel-verifier's verdict for the tree at $1, from its last message:
-# the line `VERDICT: pass` or `VERDICT: fail`, its findings after it. A
-# verifier that ends without the line fails. Only this hook writes the
+# Records a keel-verifier's verdict for the tree at $1, from its report: the
+# line `VERDICT: pass` or `VERDICT: fail`, its findings after it. A verifier
+# that ends without the line fails. Only the verifier's own hooks write the
 # verdict, so the session that did the work never records its own pass. It
 # goes to $VERDICTS_DIR for every tree, where `keel verdict` reads it, and
 # into the run as well when an active run holds the tree.
-record_verdict() { # record_verdict <cwd> <last message>
+record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed it back>]
   local tree dir verdict findings code
   tree=$(tree_of "$1" 2>/dev/null) || return 0
   code=$(git -C "$tree" rev-parse 'HEAD^{tree}' 2>/dev/null) || return 0
@@ -1229,8 +1229,8 @@ record_verdict() { # record_verdict <cwd> <last message>
     findings="the verifier ended without a VERDICT line"
   fi
   mkdir -p "$VERDICTS_DIR"
-  jq -n --arg v "$verdict" --arg t "$code" --arg p "$tree" --arg now "$(now)" --arg f "$findings" \
-    '{verdict: $v, tree: $t, path: $p, at: $now, findings: $f}' | write_atomic "$VERDICTS_DIR/$(tree_key "$tree").json"
+  jq -n --arg v "$verdict" --arg t "$code" --arg p "$tree" --arg now "$(now)" --arg f "$findings" --arg h "${3:-}" \
+    '{verdict: $v, tree: $t, path: $p, at: $now, findings: $f, handback: $h}' | write_atomic "$VERDICTS_DIR/$(tree_key "$tree").json"
   dir=$(run_dir "$tree")
   [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] || return 0
   run_update "$dir" '.verifier = {verdict: $v, tree: $t, at: $now, findings: $f}' \
@@ -1356,6 +1356,7 @@ hook)
   worktree-create) hook_worktree_create ;;
   worktree-remove) hook_worktree_remove ;;
   subagent-stop) hook_subagent_stop ;;
+  handback) hook_handback ;;
   git-guard) hook_git_guard ;;
   stop) hook_stop ;;
   *) die "unknown hook: ${1:-}" ;;

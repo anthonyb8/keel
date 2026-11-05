@@ -43,7 +43,7 @@ check "settings.json is valid JSON, or Claude Code would drop every permission" 
 # A hook left out never fires, and one that runs harness acts on harness's
 # trees: each event must reach the keel hook that handles it, and only that.
 eq "settings wire each hook event to keel's hook for it, never harness's" \
-  "$(printf '%s\n' 'PreToolUse git-guard' 'SessionStart context' 'Stop stop' 'SubagentStart context' 'SubagentStop subagent-stop' 'WorktreeCreate worktree-create' 'WorktreeRemove worktree-remove')" \
+  "$(printf '%s\n' 'PostToolUse handback' 'PreToolUse git-guard' 'SessionStart context' 'Stop stop' 'SubagentStart context' 'SubagentStop subagent-stop' 'WorktreeCreate worktree-create' 'WorktreeRemove worktree-remove')" \
   "$(jq -r '.hooks | to_entries[] | .key + " " + (.value[].hooks[].command | ltrimstr("\"$HOME/.local/bin/keel\" hook "))' "$HOME/.keel/claude/settings.json" | sort)"
 eq "git-guard guards Bash and blocks the command when it cannot run" "Bash block" \
   "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].onFailure)"' "$HOME/.keel/claude/settings.json")"
@@ -760,17 +760,26 @@ NV="$T/work/acme/never-verified"
 git clone -q "$T/remotes/acme/app" "$NV"
 check "a tree no verifier has judged fails it" grep -q "no verifier has judged" <<<"$(cd "$NV" && "$K" verdict 2>&1)"
 # A verifier can return its report through a SubagentHandback tool call, which
-# leaves its last assistant message with no text: the report is read from its
-# own transcript instead, the shape Claude Code writes.
-handback() { # handback <report>
-  jq -nc --arg m "$1" '{type:"assistant",message:{role:"assistant",content:[{type:"tool_use",name:"SubagentHandback",input:{message:$m}}]}}' >"$T/handback.jsonl"
-  jq -n --arg c "$GR" --arg t "$T/handback.jsonl" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"v2",agent_type:"keel-verifier",agent_transcript_path:$t,last_assistant_message:""}' |
+# leaves its last assistant message with no text. Claude Code fires PostToolUse
+# on the handback, then SubagentStop before the handback reaches the verifier's
+# transcript, so these are the events in that order with the transcript as it
+# stands when SubagentStop fires: written, but without the handback.
+handback() { # handback <agent type> <report>
+  jq -nc '{type:"assistant",message:{role:"assistant",content:[{type:"tool_use",name:"Bash",input:{command:"npm test"}}]}}' >"$T/handback.jsonl"
+  jq -n --arg c "$GR" --arg a "$1" --arg m "$2" '{hook_event_name:"PostToolUse",cwd:$c,agent_id:"v2",agent_type:$a,tool_name:"SubagentHandback",tool_input:{message:$m}}' |
+    $K hook handback
+  jq -n --arg c "$GR" --arg a "$1" --arg t "$T/handback.jsonl" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"v2",agent_type:$a,agent_transcript_path:$t,last_assistant_message:""}' |
     $K hook subagent-stop
 }
-handback $'Ran the tests.\nVERDICT: pass'
+handback keel-verifier $'Ran the tests.\nVERDICT: pass'
 eq "a verifier that hands its report back has its pass recorded" "pass" "$(vd | head -1)"
-handback "Looked at it, seems fine."
+handback keel-verifier "Looked at it, seems fine."
 eq "and a handback with no VERDICT line records fail" "fail" "$(vd | head -1)"
+handback keel-agent $'VERDICT: pass'
+eq "only a keel-verifier's handback is recorded" "fail" "$(vd | head -1)"
+verifier_says $'VERDICT: pass'
+verifier_says ""
+eq "a verifier that ends with no text and hands nothing back records fail" "fail" "$(vd | head -1)"
 verifier_says $'VERDICT: passed with caveats'
 eq "a VERDICT line that is not exactly pass or fail records fail" "fail" "$(vd | head -1)"
 
