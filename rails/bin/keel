@@ -274,7 +274,7 @@ hook_subagent_stop() {
   agent_id=$(jq -r .agent_id <<<"$input")
   cwd=$(jq -r .cwd <<<"$input")
   if [[ "$(jq -r '.agent_type // ""' <<<"$input")" == keel-verifier ]]; then
-    record_verdict "$cwd" "$(jq -r '.last_assistant_message // ""' <<<"$input")"
+    record_verdict "$cwd" "$(verifier_report "$input")"
   fi
   entry=$(pool_entry "$cwd")
   [[ -n "$entry" ]] || return 0
@@ -1196,6 +1196,22 @@ hook_stop() {
 Keep going, or write $dir/giveup.md saying why you are stuck." '{decision: "block", reason: $r}'
 }
 
+# The verifier's report: its last assistant message, or, when that holds no
+# VERDICT line, the last report it handed back through a SubagentHandback tool
+# call, read from its own transcript. A handback leaves the last message with
+# no text, so reading that alone records a passing verifier as a fail.
+verifier_report() { # verifier_report <SubagentStop input>
+  local message transcript
+  message=$(jq -r '.last_assistant_message // ""' <<<"$1")
+  transcript=$(jq -r '.agent_transcript_path // ""' <<<"$1")
+  if ! grep -qE '^VERDICT: ' <<<"$message" && [[ -f "$transcript" ]]; then
+    message=$(jq -rn '[inputs | .message.content[]?
+      | select(.type? == "tool_use" and .name == "SubagentHandback") | .input.message // ""] | last // ""' \
+      "$transcript" 2>/dev/null) || message=""
+  fi
+  printf '%s\n' "$message"
+}
+
 # Records a keel-verifier's verdict for the tree at $1, from its last message:
 # the line `VERDICT: pass` or `VERDICT: fail`, its findings after it. A
 # verifier that ends without the line fails. Only this hook writes the
@@ -1206,7 +1222,7 @@ record_verdict() { # record_verdict <cwd> <last message>
   local tree dir verdict findings code
   tree=$(tree_of "$1" 2>/dev/null) || return 0
   code=$(git -C "$tree" rev-parse 'HEAD^{tree}' 2>/dev/null) || return 0
-  verdict=$(grep -oE '^VERDICT: (pass|fail)' <<<"$2" | tail -1 | cut -d' ' -f2 || true)
+  verdict=$(grep -oE '^VERDICT: (pass|fail)[[:space:]]*$' <<<"$2" | tail -1 | cut -d' ' -f2 | tr -d '[:space:]' || true)
   findings=$(sed -n '/^VERDICT: /,$p' <<<"$2" | tail -n +2 | head -c 4000)
   if [[ -z "$verdict" ]]; then
     verdict=fail

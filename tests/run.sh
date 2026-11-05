@@ -759,6 +759,20 @@ check "outside a run too, only a keel-verifier's verdict is recorded" bash -c "!
 NV="$T/work/acme/never-verified"
 git clone -q "$T/remotes/acme/app" "$NV"
 check "a tree no verifier has judged fails it" grep -q "no verifier has judged" <<<"$(cd "$NV" && "$K" verdict 2>&1)"
+# A verifier can return its report through a SubagentHandback tool call, which
+# leaves its last assistant message with no text: the report is read from its
+# own transcript instead, the shape Claude Code writes.
+handback() { # handback <report>
+  jq -nc --arg m "$1" '{type:"assistant",message:{role:"assistant",content:[{type:"tool_use",name:"SubagentHandback",input:{message:$m}}]}}' >"$T/handback.jsonl"
+  jq -n --arg c "$GR" --arg t "$T/handback.jsonl" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"v2",agent_type:"keel-verifier",agent_transcript_path:$t,last_assistant_message:""}' |
+    $K hook subagent-stop
+}
+handback $'Ran the tests.\nVERDICT: pass'
+eq "a verifier that hands its report back has its pass recorded" "pass" "$(vd | head -1)"
+handback "Looked at it, seems fine."
+eq "and a handback with no VERDICT line records fail" "fail" "$(vd | head -1)"
+verifier_says $'VERDICT: passed with caveats'
+eq "a VERDICT line that is not exactly pass or fail records fail" "fail" "$(vd | head -1)"
 
 section "reflect"
 # Recorded synthesizer output: findings at three levels, out of order, and
