@@ -400,6 +400,113 @@ echo feature/g >"$T/keelpacks/acme/protected"
 eq "git-guard asks keel, not harness, for the protected list" "deny" "$(KEEL_PACKS="$T/keelpacks" guard "$G" "git merge develop")"
 rm "$PACK/protected"
 
+section "linear"
+# A stub Linear on a local port, which logs each request body and answers only
+# the stub key. ACME's pack names its team; OTHER gets team and key from the map.
+STUB_KEY="lin_api_STUBKEYa1b2c3d4e5f6"
+python3 -I "$ROOT/tests/linear-stub.py" "$T/linear.port" "$T/linear.log" "$STUB_KEY" &
+LINEAR_STUB=$!
+trap 'kill "$LINEAR_STUB" 2>/dev/null; rm -rf "$T"' EXIT
+for _ in {1..50}; do [[ -s "$T/linear.port" ]] && break; sleep 0.1; done
+KEEL_LINEAR_URL="http://127.0.0.1:$(cat "$T/linear.port")/graphql"
+export KEEL_LINEAR_URL
+echo ANB >"$PACK/linear"
+mkdir -p "$HOME/.config/keel"
+printf '# origin glob, team, key env\n*/remotes/acme/app ACME LINEAR_KEY_ACME\n*/remotes/other/* OTH LINEAR_KEY_OTHER\n' >"$HOME/.config/keel/linear"
+export LINEAR_KEY_ACME="$STUB_KEY" LINEAR_KEY_OTHER="$STUB_KEY"
+OUT="$T/linear-out" # every keel linear output and error, searched for the key at the end
+# curl, wrapped to log its arguments, so the key can be shown never to reach a
+# command line.
+cat >"$T/stubs/curl" <<SH
+#!/bin/sh
+printf '%s\n' "\$*" >>"$T/curl-args"
+exec $(command -v curl) "\$@"
+SH
+chmod +x "$T/stubs/curl"
+lin() { # lin <dir> <args...> -> stdout; stdout and stderr are also kept in $OUT
+  local dir="$1" out err code=0
+  shift
+  out=$(cd "$dir" && $K linear "$@" 2>"$T/linear-err") || code=$?
+  err=$(cat "$T/linear-err")
+  printf '%s\n%s\n' "$out" "$err" >>"$OUT"
+  echo "$out"
+  [[ -z "$err" ]] || echo "$err" >&2
+  return "$code"
+}
+last() { tail -1 "$T/linear.log"; } # the last request body the stub saw
+sent() { grep -c "${1:-.}" "$T/linear.log"; } # sent [pattern] -> how many requests the stub saw
+printf 'A body with "quotes", `ticks` and $dollars.\n\nSecond paragraph.\n' >"$T/body.md"
+
+eq "a pack's linear file names the team for its repositories" "ANB" "$(lin "$ACME" team)"
+eq "the map names it for a repository no pack owns" "OTH" "$(lin "$OTHER" team)"
+err=$(lin "$SITE" team 2>&1 >/dev/null)
+refute "a repository the map does not cover fails" lin "$SITE" team
+check "and says to add a line to ~/.config/keel/linear" grep -qF "add a line to ~/.config/keel/linear" <<<"$err"
+err=$(LINEAR_KEY_ACME="" lin "$ACME" get ANB-31 2>&1 >/dev/null)
+check "an unset key fails naming the variable" grep -qx "keel: LINEAR_KEY_ACME is not set" <<<"$err"
+err=$(LINEAR_KEY_ACME="lin_api_WRONG" lin "$ACME" get ANB-31 2>&1 >/dev/null)
+check "a key Linear refuses fails with Linear's reason" grep -q "Authentication required" <<<"$err"
+check "and never prints the key it sent" test -z "$(grep -F lin_api_WRONG <<<"$err")"
+
+out=$(lin "$ACME" get ANB-31)
+eq "get prints the issue as JSON" "keel ANB-32" "$(jq -r '"\(.project.name) \(.relations.nodes[0].relatedIssue.identifier)"' <<<"$out")"
+eq "get asks for the issue by its ID" "ANB-31" "$(last | jq -r .variables.id)"
+check "with its relations and comments" grep -q "inverseRelations.*comments" <<<"$(last | jq -r .query | tr -d '\n')"
+refute "get on an issue Linear cannot find fails" lin "$ACME" get ANB-404
+eq "search lists matching open issues" "ANB-31" "$(lin "$ACME" search keel skeleton | cut -f1)"
+eq "in the repository's team, by the whole text" "ANB|keel skeleton" "$(last | jq -r '"\(.variables.team)|\(.variables.text)"')"
+
+out=$(lin "$ACME" create --title "A title" --body "$T/body.md" --project keel --blocked-by ANB-31 --blocked-by ANB-32)
+eq "create prints the ID, URL, team and workspace" "ANB-99 https://linear.test/ANB-99 (team ANB, workspace Stub Org)" "$out"
+create_req=$(grep issueCreate "$T/linear.log" | tail -1)
+eq "create files in the repository's team" "team-ANB" "$(jq -r .variables.teamId <<<"$create_req")"
+eq "under the named project" "project-keel" "$(jq -r .variables.projectId <<<"$create_req")"
+check "with the body file sent byte for byte" cmp -s "$T/body.md" <(jq -j .variables.description <<<"$create_req")
+eq "and relates each --blocked-by as blocking it" "$(printf 'uuid-ANB-31 uuid-ANB-99 blocks\nuuid-ANB-32 uuid-ANB-99 blocks')" \
+  "$(grep issueRelationCreate "$T/linear.log" | tail -2 | jq -r '"\(.variables.a) \(.variables.b) \(.query | capture("type: (?<t>[a-z]+)").t)"')"
+creates=$(sent issueCreate)
+refute "create refuses a missing body file" lin "$ACME" create --title t --body "$T/nope.md"
+refute "create refuses a project Linear does not have" lin "$ACME" create --title t --body "$T/body.md" --project nope
+eq "and files no issue for either" "$creates" "$(sent issueCreate)"
+
+eq "update sets a state by its name" "ANB-99 Canceled" "$(lin "$ACME" update ANB-99 --state Canceled)"
+eq "sending the state's ID" "state-canceled" "$(last | jq -r .variables.stateId)"
+check "and leaves the description alone" test "$(last | jq -r '.variables | has("description")')" == false
+lin "$ACME" update ANB-99 --body "$T/body.md" >/dev/null
+eq "update --body replaces the description" "$(cat "$T/body.md")" "$(last | jq -r .variables.description)"
+check "and leaves the state alone" test "$(last | jq -r '.variables | has("stateId")')" == false
+updates=$(sent issueUpdate)
+refute "update refuses a state the team does not have" lin "$ACME" update ANB-99 --state Nope
+eq "and sends no update" "$updates" "$(sent issueUpdate)"
+
+eq "comment prints the comment's URL" "https://linear.test/comment/1" "$(lin "$ACME" comment ANB-31 --body "$T/body.md")"
+eq "and posts the body file on the issue" "uuid-ANB-31|$(cat "$T/body.md")" "$(last | jq -r '"\(.variables.issueId)|\(.variables.body)"')"
+eq "relate links A as blocking B" "uuid-ANB-31 uuid-ANB-32" "$(lin "$ACME" relate ANB-31 blocks ANB-32 >/dev/null && last | jq -r '"\(.variables.a) \(.variables.b)"')"
+
+lin "$ACME" project create keel --summary "Short." --body "$T/body.md" >/dev/null
+eq "project create puts the summary in description" "Short. team-ANB" "$(last | jq -r '"\(.variables.description) \(.variables.teamId)"')"
+eq "and the body file in content" "$(cat "$T/body.md")" "$(last | jq -r .variables.content)"
+lin "$ACME" project update keel --body "$T/body.md" >/dev/null
+eq "project update sends only what it was given" "project-keel content" "$(last | jq -r '"\(.variables.id) \(.variables | del(.id) | keys | join(","))"')"
+eq "project get prints the project" "keel" "$(lin "$ACME" project get keel | jq -r .name)"
+long=$(printf 'x%.0s' {1..255})
+lin "$ACME" project update keel --summary "$long" >/dev/null
+eq "a summary of Linear's 255 characters is sent" "$long" "$(last | jq -r .variables.description)"
+requests=$(sent)
+err=$(lin "$ACME" project update keel --summary "${long}x" 2>&1 >/dev/null)
+check "one over is refused" grep -q "Linear allows 255" <<<"$err"
+eq "before anything is sent" "$requests" "$(sent)"
+
+check "every request went through curl's argument log" test "$(grep -c . "$T/curl-args")" -eq "$(sent)"
+check "the key never appears in any output, error, request body or curl command line" \
+  test -z "$(grep -F "$STUB_KEY" "$OUT" "$T/linear.log" "$T/curl-args")"
+rm "$T/stubs/curl"
+kill "$LINEAR_STUB"
+wait "$LINEAR_STUB" 2>/dev/null
+trap 'rm -rf "$T"' EXIT
+unset KEEL_LINEAR_URL LINEAR_KEY_ACME LINEAR_KEY_OTHER
+rm "$PACK/linear"
+
 section "isolation"
 eq "harness paths are byte for byte unchanged after every keel command above" "$before" "$(snapshot_harness)"
 # The check above is only worth something if it can fail: an install pointed

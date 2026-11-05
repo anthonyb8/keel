@@ -12,6 +12,15 @@
 #   keel gate "<intent>"      run the no-mistakes gate on this branch; --dry-run prints the command
 #   keel fold <fix> <target>  fold a gate fix commit into the commit it fixes, for unpushed
 #                             history only; refused or undone unless the final tree is unchanged
+#   keel linear <verb> ...    Linear for this repository's workspace, over its API:
+#                               team                      the team key
+#                               get <ID>                  the issue, its relations and comments, as JSON
+#                               search <text>             the team's open issues whose title has the text
+#                               create --title <t> --body <file> [--project <name>] [--blocked-by <ID>]...
+#                               update <ID> [--state <name>] [--body <file>]
+#                               comment <ID> --body <file>
+#                               relate <A> blocks <B>
+#                               project create|get|update <name> [--summary <s>] [--body <file>]
 #   keel stack up [args]      start this tree's stack detached through the pack's stack script,
 #                             wait until it serves, print its URL; args go to the script
 #   keel stack down           stop it
@@ -31,6 +40,7 @@
 # A pack is a directory registered under $KEEL_PACKS (default
 # ~/.config/harness/packs, read-only), shared with harness until packs move
 # into their repositories.
+# shellcheck disable=SC2016 # keel linear's GraphQL documents hold literal $variables
 set -euo pipefail
 
 # The config dir is set by `keel claude` and nowhere else: Claude Code ignores
@@ -52,7 +62,7 @@ die() {
 }
 
 usage() {
-  awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0"
+  awk 'NR>1 && /^# shellcheck/ {next} NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0"
 }
 
 # Prints the pack whose `match` file has a glob matching the origin remote of
@@ -602,6 +612,270 @@ toon_field() {
   '
 }
 
+# Linear, over its GraphQL API, for any workspace. The repository picks the
+# workspace: ~/.config/keel/linear maps an origin glob to a team key and the
+# name of the env var holding that workspace's API key, matched like a pack's
+# `match`. A pack's `linear` file still names the team for the repositories it
+# owns. The key goes to curl in a header file, never on a command line, and no
+# message ever prints it.
+LINEAR_URL="${KEEL_LINEAR_URL:-https://api.linear.app/graphql}"
+LINEAR_MAP="$HOME/.config/keel/linear"
+
+# Prints "<team> <key env>" for the repository at $1, or dies saying what to
+# add or set.
+linear_target() {
+  local dir="$1" remote glob team env pack line
+  remote=$(git -C "$dir" remote get-url origin 2>/dev/null) ||
+    die "no origin remote in $dir, so no Linear workspace maps to it"
+  if [[ -f "$LINEAR_MAP" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "${line// /}" || "$line" == \#* ]] && continue
+      read -r glob team env _ <<<"$line"
+      # shellcheck disable=SC2053 # the pattern is a glob on purpose
+      if [[ "$remote" == $glob ]]; then
+        pack=$(pack_for "$dir")
+        if [[ -n "$pack" && -f "$pack/linear" ]]; then
+          team=$(tr -d '[:space:]' <"$pack/linear")
+        fi
+        [[ -n "$team" && -n "$env" ]] || die "malformed line in ~/.config/keel/linear: $line"
+        echo "$team $env"
+        return
+      fi
+    done <"$LINEAR_MAP"
+  fi
+  die "no Linear workspace maps to origin $remote; add a line to ~/.config/keel/linear: <origin glob> <team key> <API key env var>"
+}
+
+# Sends the JSON request body in file $1 and prints the response's data, or
+# dies with Linear's errors. LINEAR_ENV names the env var holding the key.
+linear_call() {
+  local body="$1" hdr out key
+  key="${!LINEAR_ENV:-}"
+  [[ -n "$key" ]] || die "$LINEAR_ENV is not set"
+  hdr=$(mktemp)
+  chmod 600 "$hdr"
+  printf 'Authorization: %s\nContent-Type: application/json\n' "$key" >"$hdr"
+  out=$(curl -sS -H @"$hdr" --data @"$body" "$LINEAR_URL" 2>&1) || {
+    rm -f "$hdr"
+    die "Linear did not answer: ${out//$key/<key>}"
+  }
+  rm -f "$hdr"
+  if ! jq -e . >/dev/null 2>&1 <<<"$out"; then
+    die "Linear answered with something other than JSON: ${out//$key/<key>}"
+  fi
+  if jq -e '.errors | length > 0' >/dev/null <<<"$out"; then
+    die "Linear refused the request: $(jq -r '[.errors[].message] | join("; ")' <<<"$out")"
+  fi
+  jq '.data' <<<"$out"
+}
+
+# gql <query> [jq args building the variables object...] -> data. The
+# variables come from `jq -n` with the given args, so Markdown read with
+# --rawfile is never escaped by hand.
+gql() {
+  local query="$1" vars body data
+  shift
+  vars=$(jq -n "$@" '$ARGS.named') || die "could not build the request"
+  body=$(mktemp)
+  jq -n --arg q "$query" --argjson v "$vars" '{query: $q, variables: $v}' >"$body"
+  data=$(linear_call "$body") || {
+    rm -f "$body"
+    exit 1
+  }
+  rm -f "$body"
+  echo "$data"
+}
+
+issue_uuid() {
+  gql 'query($id: String!) { issue(id: $id) { id } }' --arg id "$1" | jq -er '.issue.id' ||
+    die "no issue $1"
+}
+
+# Prints "<team id> <workspace name>" for the team key $1.
+team_id() {
+  gql 'query($key: String!) { teams(filter: {key: {eq: $key}}) { nodes { id } } organization { name } }' --arg key "$1" |
+    jq -er '"\(.teams.nodes[0].id // error) \(.organization.name)"' || die "no team $1 in this workspace"
+}
+
+project_id() {
+  gql 'query($name: String!) { projects(filter: {name: {eq: $name}}) { nodes { id } } }' --arg name "$1" |
+    jq -er '.projects.nodes[0].id' || die "no project named $1"
+}
+
+need_file() {
+  [[ -n "${2:-}" ]] || die "$1 needs a value"
+  [[ -f "$2" ]] || die "no such file: $2"
+}
+
+linear() {
+  local verb="${1:-}" target team
+  shift || true
+  [[ -n "$verb" ]] || die "usage: keel linear team|get|search|create|update|comment|relate|project ..."
+  target=$(linear_target "$PWD") || exit 1
+  team=${target% *}
+  LINEAR_ENV=${target#* }
+  case "$verb" in
+  team) echo "$team" ;;
+  get) linear_get "$@" ;;
+  create) linear_create "$team" "$@" ;;
+  update) linear_update "$@" ;;
+  comment) linear_comment "$@" ;;
+  relate) linear_relate "$@" ;;
+  project) linear_project "$team" "$@" ;;
+  search) linear_search "$team" "$@" ;;
+  *) die "unknown linear verb: $verb" ;;
+  esac
+}
+
+linear_get() {
+  [[ $# -eq 1 ]] || die "usage: keel linear get <ID>"
+  gql 'query($id: String!) { issue(id: $id) {
+      identifier title description url branchName priority
+      state { name type } team { key } project { name } parent { identifier title }
+      relations { nodes { type relatedIssue { identifier title state { name } } } }
+      inverseRelations { nodes { type issue { identifier title state { name } } } }
+      comments { nodes { body createdAt user { name } } } } }' --arg id "$1" | jq '.issue'
+}
+
+linear_create() {
+  local team="$1" title="" body="" project="" blocked=() tid org pid data id url
+  shift
+  while (($#)); do
+    case "$1" in
+    --title) title="${2:-}" && shift 2 ;;
+    --body) body="${2:-}" && shift 2 ;;
+    --project) project="${2:-}" && shift 2 ;;
+    --blocked-by) blocked+=("${2:-}") && shift 2 ;;
+    *) die "usage: keel linear create --title <t> --body <file> [--project <name>] [--blocked-by <ID>]..." ;;
+    esac
+  done
+  [[ -n "$title" ]] || die "create needs --title"
+  need_file --body "$body"
+  read -r tid org <<<"$(team_id "$team")" || exit 1
+  [[ -n "$tid" ]] || exit 1
+  local args=(--arg teamId "$tid" --arg title "$title" --rawfile description "$body")
+  if [[ -n "$project" ]]; then
+    pid=$(project_id "$project") || exit 1
+    args+=(--arg projectId "$pid")
+  fi
+  data=$(gql 'mutation($teamId: String!, $title: String!, $description: String, $projectId: String) {
+      issueCreate(input: {teamId: $teamId, title: $title, description: $description, projectId: $projectId}) {
+        issue { id identifier url } } }' "${args[@]}") || exit 1
+  id=$(jq -r '.issueCreate.issue.identifier' <<<"$data")
+  url=$(jq -r '.issueCreate.issue.url' <<<"$data")
+  local b
+  for b in "${blocked[@]}"; do
+    linear_relate "$b" blocks "$id" >/dev/null || exit 1
+  done
+  echo "$id $url (team $team, workspace $org)"
+}
+
+linear_update() {
+  local id="${1:-}" state="" body="" sid
+  [[ -n "$id" && "$id" != --* ]] || die "usage: keel linear update <ID> [--state <name>] [--body <file>]"
+  shift
+  while (($#)); do
+    case "$1" in
+    --state) state="${2:-}" && shift 2 ;;
+    --body) body="${2:-}" && shift 2 ;;
+    *) die "usage: keel linear update <ID> [--state <name>] [--body <file>]" ;;
+    esac
+  done
+  [[ -n "$state" || -n "$body" ]] || die "update needs --state or --body"
+  local args=(--arg id "$id")
+  if [[ -n "$state" ]]; then
+    sid=$(gql 'query($id: String!) { issue(id: $id) { team { states { nodes { id name } } } } }' --arg id "$id" |
+      jq -er --arg s "$state" '.issue.team.states.nodes[] | select(.name == $s) | .id') ||
+      die "no state named $state in $id's team"
+    args+=(--arg stateId "$sid")
+  fi
+  if [[ -n "$body" ]]; then
+    need_file --body "$body"
+    args+=(--rawfile description "$body")
+  fi
+  gql 'mutation($id: String!, $stateId: String, $description: String) {
+      issueUpdate(id: $id, input: {stateId: $stateId, description: $description}) {
+        issue { identifier state { name } } } }' "${args[@]}" |
+    jq -r '.issueUpdate.issue | "\(.identifier) \(.state.name)"'
+}
+
+linear_comment() {
+  [[ $# -eq 3 && "$2" == --body ]] || die "usage: keel linear comment <ID> --body <file>"
+  need_file --body "$3"
+  local uuid
+  uuid=$(issue_uuid "$1") || exit 1
+  gql 'mutation($issueId: String!, $body: String!) { commentCreate(input: {issueId: $issueId, body: $body}) {
+      comment { url } } }' --arg issueId "$uuid" --rawfile body "$3" | jq -r '.commentCreate.comment.url'
+}
+
+linear_relate() {
+  [[ $# -eq 3 && "$2" == blocks ]] || die "usage: keel linear relate <A> blocks <B>"
+  local a b
+  a=$(issue_uuid "$1") || exit 1
+  b=$(issue_uuid "$3") || exit 1
+  gql 'mutation($a: String!, $b: String!) { issueRelationCreate(input: {issueId: $a, relatedIssueId: $b, type: blocks}) {
+      success } }' --arg a "$a" --arg b "$b" >/dev/null || exit 1
+  echo "$1 blocks $3"
+}
+
+# A project's description is capped at 255 characters by Linear, so the long
+# text goes in its content.
+linear_project() {
+  local team="$1" verb="${2:-}" name="${3:-}" summary="" body="" tid pid
+  [[ -n "$verb" && -n "$name" ]] || die "usage: keel linear project create|get|update <name> [--summary <s>] [--body <file>]"
+  shift 3
+  while (($#)); do
+    case "$1" in
+    --summary) summary="${2:-}" && shift 2 ;;
+    --body) body="${2:-}" && shift 2 ;;
+    *) die "usage: keel linear project create|get|update <name> [--summary <s>] [--body <file>]" ;;
+    esac
+  done
+  ((${#summary} <= 255)) || die "--summary is ${#summary} characters; Linear allows 255. Put the rest in --body"
+  [[ -z "$body" ]] || need_file --body "$body"
+  local args=()
+  [[ -n "$summary" ]] && args+=(--arg description "$summary")
+  [[ -n "$body" ]] && args+=(--rawfile content "$body")
+  case "$verb" in
+  get)
+    gql 'query($name: String!) { projects(filter: {name: {eq: $name}}) { nodes {
+        name description content url state
+        issues { nodes { identifier title state { name } } } } } }' --arg name "$name" |
+      jq -e '.projects.nodes[0]' || die "no project named $name"
+    ;;
+  create)
+    tid=$(team_id "$team") || exit 1
+    tid=${tid%% *}
+    gql 'mutation($name: String!, $teamId: String!, $description: String, $content: String) {
+        projectCreate(input: {name: $name, teamIds: [$teamId], description: $description, content: $content}) {
+          project { name url } } }' "${args[@]}" --arg name "$name" --arg teamId "$tid" |
+      jq -r '.projectCreate.project | "\(.name) \(.url)"'
+    ;;
+  update)
+    [[ -n "$summary" || -n "$body" ]] || die "project update needs --summary or --body"
+    pid=$(project_id "$name") || exit 1
+    gql 'mutation($id: String!, $description: String, $content: String) {
+        projectUpdate(id: $id, input: {description: $description, content: $content}) {
+          project { name url } } }' "${args[@]}" --arg id "$pid" |
+      jq -r '.projectUpdate.project | "\(.name) \(.url)"'
+    ;;
+  *) die "unknown project verb: $verb" ;;
+  esac
+}
+
+# The team's open issues whose title contains the text, for a duplicate check
+# before filing.
+linear_search() {
+  local team="$1"
+  shift
+  [[ $# -ge 1 ]] || die "usage: keel linear search <text>"
+  gql 'query($team: String!, $text: String!) { issues(first: 50, filter: {
+      team: {key: {eq: $team}}, title: {containsIgnoreCase: $text},
+      state: {type: {nin: ["completed", "canceled"]}} }) {
+      nodes { identifier title url state { name } } } }' --arg team "$team" --arg text "$*" |
+    jq -r '.issues.nodes[] | "\(.identifier)\t\(.state.name)\t\(.title)\t\(.url)"'
+}
+
 cmd="${1:-}"
 [[ -n "$cmd" ]] || {
   usage >&2
@@ -617,6 +891,7 @@ protected) protected_for "${1:-$PWD}" ;;
 provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
 gate) gate "$@" ;;
+linear) linear "$@" ;;
 fold) fold "$@" ;;
 __fold-todo) fold_todo "$@" ;;
 e2e) e2e "$@" ;;

@@ -36,6 +36,9 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
   `keel fold <fix> <target>` folds a gate fix commit into the commit it fixes, for unpushed history only, and only when the final tree comes out unchanged.
 - **git-guard.** A `PreToolUse` hook refuses any merge, rebase, cherry-pick or revert that would move a protected branch: the pack's base, the default branch and the pack's `protected` list, as `keel protected` prints them.
   What it cannot place, such as a git call inside `bash -c`, it refuses rather than guesses.
+- **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`.
+  The repository picks the workspace through `~/.config/keel/linear`, one line per origin glob: `*github.com[/:]anthonyb8/* ANB LINEAR_API_KEY_PERSONAL`, meaning the team key and the env var holding that workspace's key.
+  A pack's `linear` file still names the team for the repositories it owns. The key is sent in a header file, never on a command line, and never printed.
 
 ## The four layers
 
@@ -64,7 +67,8 @@ tests/       run.sh for the logic, against a throwaway HOME
 ## Tests
 
 ```sh
-tests/run.sh    # the logic, against throwaway repos, pools and packs under a throwaway HOME; no Claude calls
+tests/run.sh          # the logic, against throwaway repos, pools, packs and a stub Linear under a throwaway HOME; no Claude calls
+tests/linear-live.sh  # read-only checks against the real Linear workspaces; needs both API keys, kept out of CI
 ```
 
 CI runs shellcheck and `tests/run.sh` on every pull request.
