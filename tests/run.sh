@@ -800,6 +800,16 @@ w=$(fresh bug-fix)
 fix_cart "$w"
 printf '%b' "$twice_spec" >"$w/specs/twice_spec.sh"
 check "bug-fix: a fix with a spec that fails before it passes the checks" "$EV/bug-fix/checks.sh" "$w" "$(reply ok)"
+# A session works in a worktree of its own, as keel's rules have it, and the
+# checks run there: the fixture's origin is found from the tree's remote.
+w=$(fresh bug-fix)
+git -C "$w" worktree add -q -b fix/twice "$T/elsewhere-tree" 2>/dev/null
+fix_cart "$T/elsewhere-tree"
+printf '%b' "$twice_spec" >"$T/elsewhere-tree/specs/twice_spec.sh"
+check "bug-fix: the checks pass in the worktree a session worked in" "$EV/bug-fix/checks.sh" "$T/elsewhere-tree" "$(reply ok)"
+w=$(fresh issue)
+git -C "$w" worktree add -q -b shop-12 "$T/issue-tree" 2>/dev/null
+check "issue: and find the fixture's origin from a worktree, so a push is still seen" bash -c "'$EV/issue/checks.sh' '$T/issue-tree' '$T/reply.md' | grep -q 'ok   nothing was pushed'"
 w=$(fresh bug-fix)
 fix_cart "$w"
 check "bug-fix: a fix with no regression spec fails them" bash -c "! '$EV/bug-fix/checks.sh' '$w' '$(reply ok)' && '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' | grep -q 'no spec'"
