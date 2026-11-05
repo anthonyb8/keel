@@ -39,6 +39,7 @@ Bring the tree's stack up with `keel stack up`, or the reset form the pack's rul
 - A failure on the first run that passes on the second is flaky: fix the wait or the selector before calling it done.
 
 Look at every screenshot. Visual perfection is the bar: layout, overflow, alignment, empty and error states.
+When the issue has an approved mockup, compare each screenshot with its frame, and name every difference that is not a deliberate one the build reported.
 
 ## 5. Report
 

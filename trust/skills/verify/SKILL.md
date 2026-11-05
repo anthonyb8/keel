@@ -13,6 +13,7 @@ Spawn a `keel-verifier` (a new one each time, never one resumed) with:
 
 - the goal, from the run's `contract.md` (in the folder `keel run dir` prints), else the task as the user gave it;
 - the playbook's acceptance or the issue's acceptance checks;
+- the approved mockup's link, when the issue has one;
 - the diff and commits against the base (`keel base`, else the default branch);
 - the done check's command, if there is a contract.
 

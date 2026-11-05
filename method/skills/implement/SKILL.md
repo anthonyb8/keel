@@ -18,6 +18,7 @@ Where existing code disagrees with them, the code is drift: bring what you touch
 
 - The issue is the argument, else the one in this conversation, else the branch name's ID. With none, ask.
 - The spec is the issue, its comments, and the `/audit-issue` write-up with its answered decisions. Those decisions are settled; do not reopen them.
+- For a UI change, the mockup approved through `/mockup`, linked from the issue's comments: build to it, and name anything that has to differ and why.
 - With no audit in the conversation, say so and offer to run `/audit-issue` first. Building without one is the user's call, not a default.
 - Ask any decision still open now. Building on a guess about the data model is the most expensive mistake to undo.
 - `git status` and `git branch --show-current`. If the tree holds unrelated changes, ask before working alongside them.
