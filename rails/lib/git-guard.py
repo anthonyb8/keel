@@ -169,7 +169,8 @@ def deny(reason):
 # the verdicts and the branch are read before any of it runs.
 RUN_VERB_TEXT = re.compile(
     r"(?<![\w-])(git(?![\w-]).*?(?<![\w-])(commit|commit-tree|update-ref|push|send-pack|http-push|branch|tag)(?![\w-])"
-    r"|gh(?![\w-]))"
+    r"|gh(?![\w-])"
+    r"|keel\s+merge(?![\w-]))"
 )
 ALWAYS_REFUSED_PR = {"merge", "ready", "close", "reopen"}
 # gh's own commands. Anything else is an alias or extension that could run
@@ -421,6 +422,10 @@ def check_run(keel, cwd, commands, protected_branches):
             refusal = check_gh(keel, run, directory or run["tree"], words, text)
             if refusal:
                 return refusal
+        elif os.path.basename(words[0]) == "keel" and words[1:2] == ["merge"]:
+            run = contract_run(directory) or run_here
+            if run is not None:
+                return run_refusal(keel, run, text, "`keel merge` is never done inside a run, whatever the grants; landing a PR is the user's")
         elif run_here and RUN_VERB_TEXT.search(text):
             return run_refusal(keel, run_here, text, "git-guard cannot see inside this wrapper; run the git or gh step as a plain command")
     if alone_needed and len([c for c in commands if strip_env(c[1])[0]]) > 1:
