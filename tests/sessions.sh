@@ -112,7 +112,7 @@ for case in \
   "bug-fix|the acme app crashes with a TypeError when the cart is empty; fix it" \
   "investigation|how does this repository decide which branch a new tree is cut from?" \
   "babysit-pr|get PR #12 green" \
-  "pause|pause here" \
+  "pause|pause here: I have to stop for today with the work in this tree half done, and another session will pick it up tomorrow" \
   "pickup|pick up where the last session in this tree stopped"; do
   playbook=${case%%|*}
   reply=$(route "${case#*|}")
@@ -142,11 +142,15 @@ printf 'goal: proof.txt exists\ndone: test -f proof.txt\nbudget: 15m\ngrants: no
 # empty, so the prompt names the check the session will be held to.
 ask "$C1" "This tree's run is done when \`test -f proof.txt\` passes. For now, reply with only the word READY and do not run any tool." \
   --allowedTools "Bash(touch proof.txt)" >/dev/null
+# The session may end the run itself once the check passes, as the router
+# says, which archives it; the trail is then the newest archived folder.
+c1_run=$(cd "$C1" && keel run dir 2>/dev/null) ||
+  c1_run=$(find "$HOME/.local/state/keel/runs/archive/${C1//[\/.]/-}" -mindepth 1 -maxdepth 1 2>/dev/null | sort | tail -1)
 eq "a session under a contract is held while its done check fails, then ends its turn once it passes" "fail pass" \
-  "$(cut -f6 "$(cd "$C1" && keel run dir)/decisions.tsv" | sed 's/,.*//' | uniq | paste -sd' ')"
+  "$(cut -f6 "$c1_run/decisions.tsv" | sed 's/,.*//' | uniq | paste -sd' ')"
 eq "with the pass recorded at its HEAD" "true $(git -C "$C1" rev-parse HEAD)" \
-  "$(keel status --json "$C1" | jq -r '.[0].done_check | "\(.passed) \(.head)"')"
-(cd "$C1" && keel run stop "done" >/dev/null)
+  "$(jq -r '.done_check | "\(.passed) \(.head)"' "$c1_run/status.json")"
+(cd "$C1" && keel run stop "done" >/dev/null 2>&1)
 
 section "grants"
 C2="$T/work/other/granted"
