@@ -663,6 +663,7 @@ PUSH_ARGS="push -u origin HEAD:feature/granted"
 PUSH="git $PUSH_ARGS"
 
 eq "outside a run a commit is let through" "" "$(guard_why "git commit -m x")"
+eq "and so is keel merge, which /merge runs on the user's ask" "" "$(guard_why "keel merge 12")"
 eq "and so is a push" "" "$(guard_why "$PUSH")"
 granted commit
 eq "granted commit, a commit on the run's branch goes through" "" "$(guard_why "git commit -m 'fix the parser'")"
@@ -706,6 +707,7 @@ denied "a flag before the pr subcommand does not hide a merge" "gh pr --repo o/r
 denied "nor -R" "gh pr -R o/r merge 12"
 denied "a gh alias is refused" "gh m 12"
 denied "send-pack is refused" "git send-pack origin HEAD:refs/heads/main"
+denied "a keel merge inside a wrapper is refused" "bash -c 'keel merge 12'"
 denied "update-ref -m does not pass another ref as the run's" "git update-ref -m refs/heads/feature/granted refs/heads/main HEAD"
 denied "moving a branch with branch -f is refused" "git branch -f main HEAD"
 denied "renaming one with -M is refused" "git branch -M main"
@@ -718,7 +720,7 @@ eq "and so is reading a PR" "" "$(guard_why "gh pr view 12")"
 eq "and so does a draft PR into the base" "" "$(guard_why "gh pr create --draft --base develop --title t --body b")"
 check "a PR that is not a draft is refused" grep -q "only draft PRs" <<<"$(guard_why "gh pr create --base develop --title t")"
 check "a PR into another base is refused" grep -q "pass --base develop" <<<"$(guard_why "gh pr create --draft --base main --title t")"
-for c in "gh pr merge 12 --squash" "gh pr ready 12" "gh pr close 12"; do
+for c in "gh pr merge 12 --squash" "keel merge 12" "$K merge 12" "gh pr ready 12" "gh pr close 12"; do
   check "\`$c\` is refused in a run whatever the grants" grep -q "never done inside a run" <<<"$(guard_why "$c")"
 done
 check "a force-push is refused" grep -q "never force-pushes" <<<"$(guard_why "git push --force -u origin HEAD:feature/granted")"
@@ -782,6 +784,188 @@ verifier_says ""
 eq "a verifier that ends with no text and hands nothing back records fail" "fail" "$(vd | head -1)"
 verifier_says $'VERDICT: passed with caveats'
 eq "a VERDICT line that is not exactly pass or fail records fail" "fail" "$(vd | head -1)"
+
+section "merge"
+# keel merge against a gh stub that answers from files under $T/gh, each case
+# starting from a PR that is ready and a rule that names squash. The clone's
+# origin ends in acme/merge, the repository the stub's gh resolves to.
+make_origin "$T/remotes/acme/merge"
+MR="$T/work/acme/merge"
+git clone -q "$T/remotes/acme/merge" "$MR"
+MP="$("$K" pack "$MR")/merge"
+mkdir -p "$T/gh"
+cat >"$T/stubs/gh" <<'STUB'
+#!/usr/bin/env bash
+G="$T/gh"
+q=""
+args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -q) q="$2"; shift 2 ;;
+  *) args+=("$1"); shift ;;
+  esac
+done
+set -- "${args[@]}"
+out() { if [[ -n "$q" ]]; then jq -r "$q" "$1"; else cat "$1"; fi; }
+case "$1 $2" in
+"pr view")
+  if [[ -f "$G/merged" ]]; then out "$G/after.json"
+  elif [[ -n "$q" && -f "$G/moved" ]]; then cat "$G/moved"
+  else out "$G/pr.json"; fi ;;
+"pr checks") cat "$G/checks.json" ;;
+"repo view") cat "$G/repo.json" ;;
+"pr list")
+  if [[ " $* " == *" --head "* ]]; then cat "$G/paired.json"; else cat "$G/landed.json"; fi ;;
+"pr merge")
+  echo "$*" >>"$G/merge-calls"
+  [[ -f "$G/refuse" ]] && { echo "GraphQL: Head branch was modified" >&2; exit 1; }
+  touch "$G/merged" ;;
+"api "*)
+  case "$2" in
+  */protection)
+    # GitHub's error bodies carry a status, and gh exits 1 on them.
+    [[ -f "$G/protection.json" ]] || echo '{"message":"Branch not protected","status":"404"}' >"$G/protection.json"
+    cat "$G/protection.json"
+    ! jq -e 'has("status")' "$G/protection.json" >/dev/null ;;
+  */rules/branches/*) cat "$G/rules.json" ;;
+  esac ;;
+*) echo "gh stub: unexpected $*" >&2; exit 9 ;;
+esac
+STUB
+chmod +x "$T/stubs/gh"
+gset() { # gset <file> <jq filter>: changes one of the stub's answers
+  jq -c "$2" "$T/gh/$1.json" >"$T/gh/$1.tmp" && mv "$T/gh/$1.tmp" "$T/gh/$1.json"
+}
+mreset() { # a ready PR from feat/x into develop, and a rule naming squash
+  rm -rf "$T/gh" && mkdir -p "$T/gh"
+  echo '{"number":12,"title":"t","url":"u","state":"OPEN","isDraft":false,"baseRefName":"develop","headRefName":"feat/x","headRefOid":"aaa","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":""}' >"$T/gh/pr.json"
+  echo '[{"name":"test","bucket":"pass","link":"https://ci/1"}]' >"$T/gh/checks.json"
+  echo '{"nameWithOwner":"acme/merge","squashMergeAllowed":true,"mergeCommitAllowed":true,"rebaseMergeAllowed":true,"deleteBranchOnMerge":false}' >"$T/gh/repo.json"
+  echo '[]' >"$T/gh/rules.json"
+  echo '[]' >"$T/gh/paired.json"
+  echo '[]' >"$T/gh/landed.json"
+  echo '{"state":"MERGED","mergeCommit":{"oid":"mmm"}}' >"$T/gh/after.json"
+  printf '# acme merges\ndevelop * squash\n' >"$PACK/merge"
+}
+km() { # km -> keel merge 12's output, then its exit code on the last line
+  local out code
+  out=$(cd "$MR" && "$K" merge 12 2>&1)
+  code=$?
+  printf '%s\n%s\n' "$out" "$code"
+}
+asks() { # asks <name> <reason text>: exit 2 with that reason, and no merge
+  local res
+  res=$(km)
+  eq "$1" "2 $2" "$(tail -1 <<<"$res") $(sed '$d' <<<"$res" | jq -r .reason 2>/dev/null)"
+  check "and merges nothing" test ! -e "$T/gh/merge-calls"
+}
+
+mreset
+res=$(km)
+eq "a ready PR under a squash rule merges, exiting 0" "0 merged mmm" "$(tail -1 <<<"$res") $(sed '$d' <<<"$res" | jq -r '"\(.result) \(.merge_commit)"')"
+eq "with the rule's method, pinned to the head it checked" "pr merge 12 --squash --match-head-commit aaa" "$(cat "$T/gh/merge-calls")"
+eq "and names the rule line it merged under" "$MP:2" "$(sed '$d' <<<"$res" | jq -r .rule.source)"
+
+mreset
+printf 'develop fix/* merge\ndevelop * squash\n' >"$PACK/merge"
+gset pr '.headRefName = "fix/1-x"'
+km >/dev/null
+eq "the first line matching target and head wins" "pr merge 12 --merge --match-head-commit aaa" "$(cat "$T/gh/merge-calls")"
+
+mreset
+rm "$PACK/merge"
+asks "a pack with no merge file asks" "no rule for target: the repository's pack has no merge file"
+mreset
+echo 'main * squash' >"$PACK/merge"
+asks "no line for the PR's target asks" "no rule for target: no line in $MP matches develop from feat/x"
+mreset
+printf 'develop squash\ndevelop * merge\n' >"$PACK/merge"
+asks "a malformed line asks, rather than letting a later line win" "a line of $MP is not <target> <head glob> squash|merge|rebase|ask"
+mreset
+printf 'develop * squash\ndevelop squash\n' >"$PACK/merge"
+asks "and so does one after the line that matches" "a line of $MP is not <target> <head glob> squash|merge|rebase|ask"
+mreset
+echo 'develop * ask' >"$PACK/merge"
+asks "a rule that says ask, asks" "the rule says to ask for a merge into develop from feat/x"
+eq "handing back the facts it gathered" "develop $MP:1 acme/merge" "$(km | sed '$d' | jq -r '"\(.pr.target) \(.rule.source) \(.github.settings.nameWithOwner)"')"
+mreset
+gset repo '.squashMergeAllowed = false'
+asks "a method the repository's settings disallow asks" "the rule names squash, which the repository's settings do not allow"
+mreset
+echo '[{"type":"pull_request","parameters":{"allowed_merge_methods":["merge"]}}]' >"$T/gh/rules.json"
+asks "a method a ruleset disallows asks" "the rule names squash, which a ruleset on develop does not allow"
+mreset
+echo 'develop * merge' >"$PACK/merge"
+echo '[{"type":"required_linear_history"}]' >"$T/gh/rules.json"
+asks "a merge commit where a ruleset requires linear history asks" "the rule names a merge commit, which develop's required linear history rules out"
+mreset
+echo 'develop * merge' >"$PACK/merge"
+echo '{"required_linear_history":{"enabled":true}}' >"$T/gh/protection.json"
+asks "and so does one where branch protection requires it" "the rule names a merge commit, which develop's required linear history rules out"
+mreset
+echo '{"message":"Must have admin rights to Repository.","status":"403"}' >"$T/gh/protection.json"
+asks "branch protection it cannot read asks, rather than reading it as none" "could not read branch protection for develop"
+mreset
+echo '[{"number":11,"baseRefName":"staging","state":"OPEN","url":"u11"}]' >"$T/gh/paired.json"
+asks "a head branch with a PR into another branch asks" "the head branch feat/x also has a PR into another branch"
+mreset
+gset repo '.nameWithOwner = "upstream/merge"'
+asks "gh resolving another repository than origin asks" "gh's repository, upstream/merge, is not the origin remote the pack's rule is for"
+
+# History: a merge commit on develop, under the same rule line as the PR.
+O="$T/remotes/acme/merge"
+two=$(git -C "$O" commit-tree "$(git -C "$O" rev-parse 'develop^{tree}')" -p develop -p main -m "Merge pull request #9")
+git -C "$O" update-ref refs/heads/develop "$two"
+one=$(git -C "$O" commit-tree "$(git -C "$O" rev-parse 'develop^{tree}')" -p develop -m "Squashed (#8)")
+git -C "$O" update-ref refs/heads/develop "$one"
+mreset
+echo "[{\"number\":8,\"headRefName\":\"feat/older\",\"mergeCommit\":{\"oid\":\"$one\"}}]" >"$T/gh/landed.json"
+km >/dev/null
+check "an earlier PR under the same rule that landed as a squash agrees with it" test -s "$T/gh/merge-calls"
+mreset
+echo "[{\"number\":8,\"headRefName\":\"feat/older\",\"mergeCommit\":{\"oid\":\"$one\"}},{\"number\":9,\"headRefName\":\"feat/old\",\"mergeCommit\":{\"oid\":\"$two\"}}]" >"$T/gh/landed.json"
+asks "one that landed as a merge commit asks" "earlier PRs under the same rule did not land as a squash"
+mreset
+printf 'develop fix/* merge\ndevelop * squash\n' >"$PACK/merge"
+echo "[{\"number\":9,\"headRefName\":\"fix/9-old\",\"mergeCommit\":{\"oid\":\"$two\"}}]" >"$T/gh/landed.json"
+km >/dev/null
+check "but one under another rule line does not count against it" test -s "$T/gh/merge-calls"
+
+for c in 'pr|.isDraft = true|the PR is a draft' \
+  'pr|.state = "CLOSED"|the PR is not open' \
+  'checks|[]|no checks reported on the PR' \
+  'checks|.[0].bucket = "pending"|a check is still pending' \
+  'checks|.[0].bucket = "fail"|a check did not pass' \
+  'checks|.[0].bucket = "skipping"|a check was skipped' \
+  'pr|.mergeStateStatus = "BEHIND"|the branch is behind develop and must catch up first' \
+  'pr|.mergeStateStatus = "DIRTY"|the PR has conflicts with develop' \
+  'pr|.mergeStateStatus = "BLOCKED"|GitHub blocks the merge: something it requires, such as a review, is missing' \
+  'pr|.mergeStateStatus = "UNKNOWN"|the merge state is UNKNOWN' \
+  'pr|.mergeable = "CONFLICTING"|the PR has conflicts with develop' \
+  'pr|.reviewDecision = "CHANGES_REQUESTED"|a reviewer requested changes'; do
+  IFS='|' read -r file filter reason <<<"$c"
+  mreset
+  gset "$file" "$filter"
+  asks "not ready: $reason" "$reason"
+done
+mreset
+echo bbb >"$T/gh/moved"
+asks "a head that moved while it was checked asks" "the head moved while it was being checked"
+
+mreset
+touch "$T/gh/refuse"
+res=$(km)
+eq "a merge GitHub refuses exits 1 with its reason" "1" "$(tail -1 <<<"$res")"
+check "quoting it" grep -q "Head branch was modified" <<<"$res"
+mreset
+echo '[{"type":"merge_queue"}]' >"$T/gh/rules.json"
+echo '{"state":"OPEN","mergeCommit":null}' >"$T/gh/after.json"
+res=$(km)
+eq "behind a merge queue it reports the PR queued, exiting 0" "0 queued" "$(tail -1 <<<"$res") $(sed '$d' <<<"$res" | jq -r .result)"
+mreset
+echo '{"state":"OPEN","mergeCommit":null}' >"$T/gh/after.json"
+eq "a PR still open after the merge, with no queue, exits 1 rather than report a merge" "1" "$(km | tail -1)"
+rm -f "$PACK/merge" "$T/stubs/gh"
 
 section "reflect"
 # Recorded synthesizer output: findings at three levels, out of order, and

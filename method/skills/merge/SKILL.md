@@ -7,104 +7,54 @@ argument-hint: "<PR number or URL>"
 # Merge a pull request
 
 A merge lands on a shared branch and cannot be taken back without another PR, and different branches of one repository can follow different rules.
-So this skill merges only when the written rules name one method for this exact target branch, nothing contradicts them, and the PR is ready.
-Anything else is a question for the user, never a guess.
+So a PR merges only when the written rules name one method for this exact target branch and head, nothing contradicts them, and the PR is ready.
+`keel merge <n>` checks all of that and merges on the clear path; everything it cannot settle comes back to you, and from you to the user as a question, never a guess.
 
-## When to ask
+## 1. Check the ask
 
-Ask with `AskUserQuestion` the moment any of these holds, and merge nothing until the answer comes back:
+- The ask names exactly one PR. "Merge it" on a branch with an open PR is a question, offering that PR by number and title; two PRs are two asks.
+- When the ask assumes something about the PR, such as calling it a hotfix or naming its target, read it first with `gh pr view <n> --json title,baseRefName,headRefName` and ask if it differs.
 
-- The ask names no PR, or names more than one. One ask covers one PR: "merge it" on a branch with an open PR is a question, offering that PR by number and title.
-- No written rule names a method for this target branch. A rule for the base does not cover a release branch, and a rule for a hotfix into `staging` does not cover a promotion into it.
-- Two sources disagree, such as the pack naming squash where GitHub allows only merge commits.
-- A rule attaches a condition to merging into this branch, such as a paired PR, an order, or a person who must have looked, and you cannot confirm it holds.
-- The PR is not ready, by any check in step 3.
-- What you found differs from what the user's ask assumed, such as a PR they called a hotfix that targets `development`.
-- Anything else leaves you less than sure. When in doubt, ask.
+## 2. Run it
 
-Each question says what you found, with the source for each claim, and why it stops you.
-Its options are the concrete ways forward, such as each method a source allows, waiting, or stopping, with the one the evidence supports first and marked "(Recommended)".
+`keel merge <n>`, from inside the repository, as a Bash call of its own.
+It prints one JSON object and exits:
+
+- **0**: merged, or queued behind a merge queue (`result: "queued"`), which lands only once the queue's checks pass.
+- **2**: it merged nothing, and `reason` says why, with every fact it gathered: `pr`, `rule`, `github`, `paired`, `history` and `checks`, as far as it got.
+- **1**: the call broke, such as `gh` failing or GitHub refusing the merge; show the error and stop. Never retry with other flags.
+
+The rule it reads is the pack's `merge` file, one `<target> <head glob> <method>` per line, the first line matching both winning, with the method `squash`, `merge`, `rebase`, or `ask` for a merge a rule puts a condition on.
+
+## 3. On exit 2, ask
+
+Ask with `AskUserQuestion`, and merge nothing until the answer comes back.
+The question says what was found, with the source for each claim from the JSON, and why it stops the merge.
+Its options are the concrete ways forward, with the one the evidence supports first and marked "(Recommended)".
 Recommend only from what a rule says; history alone never makes a recommendation.
+
+What each reason needs:
+
+- **No rule for target**, or a rule that says **ask**: read the pack's `rules.md` in full (`keel pack` prints its directory), and the repository's `CLAUDE.md`, `CONTRIBUTING.md` and docs on merges, for what they say about this target and this kind of PR, and offer each method a source allows. A condition, such as a paired PR, an order, or a person who must have looked, goes in the question.
+- **Settings, a ruleset or linear history disallow the rule's method**: the sources disagree; offer the methods GitHub allows, and fixing the rule.
+- **Paired**: the head branch has a PR into another branch, listed in `paired`; say which, and what the rules say about the order.
+- **Earlier PRs did not land as the method**: list them from `history`; the rule may have changed, or be wrong.
+- **A check skipped**: a conditional job that did not run; name it from `checks`, and ask whether it can be skipped for this PR.
+- **gh's repository is not origin**: `gh repo set-default` points elsewhere; say which, and stop.
+- **A check pending**: wait, with `gh pr checks <n> --watch --fail-fast` then `keel merge <n>` again, or stop.
+- **A check did not pass**, **conflicts**, **changes requested**, **blocked** or **a draft**: report it, with the check's link from `checks`, and stop. Fixing or overriding it is never this skill's.
+- **Behind**: updating the branch is a change to it, so ask; never run `gh pr update-branch` on your own.
+- **The head moved**: a new push; run `keel merge <n>` again from the top.
+
 An answer covers this one PR and this one question: the next PR, or a new question on this one, asks again.
+`keel merge` checks the PR is ready before it reads any rule, so a question about the rule, the settings, a pairing or the history is about a PR that could merge at `pr.oid`.
+When the answer to such a question names a method, merge with `gh pr merge <n> --<method> --match-head-commit <pr.oid>`, which GitHub refuses if anything was pushed since, and never `--admin`, `--auto` or `--delete-branch`.
+When the answer changes a rule for good, the edit to the pack's `merge` file is the user's to make or approve.
 
-## 1. Read the PR
+## 4. Report
 
-```sh
-gh pr view <n> --json number,title,url,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository,mergeable,mergeStateStatus,reviewDecision,author
-```
-
-Stop and report if it is already merged or closed.
-Note the target branch, `baseRefName`: every rule below is looked up for that branch, not for the base this session started from.
-Note `headRefOid`: the merge in step 5 is pinned to it.
-
-## 2. Find the rule for this target branch
-
-Gather every source before deciding, and keep a line per source of what it says about this target branch.
-
-1. **The pack.** `keel pack` prints the pack's directory; read `rules.md` there in full, not the copy in your context, which may be stale after a compaction.
-   `keel base` is the branch work targets, and `keel protected` the branches no session may move.
-   Look for a merge method named for this target branch, and for any condition on merging into it.
-2. **The repository.** Its own `CLAUDE.md`, `CONTRIBUTING.md`, and anything under `docs/` that names merges, such as `grep -rniE 'squash|merge commit|rebase and merge|merge method' --include='*.md' .`, including ADRs on the branching model.
-3. **GitHub's settings**, read-only:
-   - `gh repo view --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed,deleteBranchOnMerge`
-   - `gh api 'repos/{owner}/{repo}/rules/branches/<target>'`: a `pull_request` rule's `allowed_merge_methods` narrows the repository's, and a `merge_queue` rule means the merge goes through a queue.
-   - `gh api 'repos/{owner}/{repo}/branches/<target>/protection'`, which returns 404 when there is no classic protection; note whether it requires linear history, which rules out a merge commit.
-4. **History**, as evidence only: how the last few PRs into this target landed.
-   `gh pr list --base <target> --state merged --limit 10 --json number,title,mergeCommit`, then `git cat-file -p <oid>` on each after a `git fetch origin <target>`: two parents is a merge commit, one is a squash or rebase.
-
-Decide:
-
-- **Clear:** a written source, the pack or the repository, names exactly one method for this target branch, GitHub allows it, and no written source says otherwise.
-  History that disagrees still goes to the user as a question, since it may mean the rule changed or the rule is wrong.
-- **Anything else is unclear:** ask, as above.
-
-GitHub's names map to `gh` flags as: "Squash and merge" `--squash`, "Create a merge commit" `--merge`, "Rebase and merge" `--rebase`.
-
-## 3. Check the PR is ready
-
-- **Draft:** stop and report; marking it ready is the user's call.
-- **Checks:** `gh pr checks <n>`. Every check must have passed, required or not.
-  A pending check is a question: wait, or stop. Waiting is `gh pr checks <n> --watch --fail-fast`, then these checks again.
-  A failed or cancelled check stops the merge; report it with its link.
-- **Merge state**, `mergeStateStatus`:
-  - `CLEAN`, or `HAS_HOOKS`: ready.
-  - `BEHIND`: the target has moved on and the branch must catch up. Updating it is a change to the branch, so ask; never run `gh pr update-branch` on your own.
-  - `DIRTY` or `mergeable: CONFLICTING`: stop and report the conflict.
-  - `BLOCKED`: something GitHub requires is missing, such as a review. Report what; never get around it.
-  - `UNSTABLE`, `UNKNOWN`, or anything else: ask.
-- **Reviews:** a `CHANGES_REQUESTED` decision stops the merge, even where no review is required.
-- **Head unchanged:** if anything above took time, read `headRefOid` again; a new head means a new push, so start over from step 1.
-
-## 4. Say what you will do
-
-Before merging, show one short block:
-
-- the PR, its title, and `head -> target`
-- the method, and the source line that names it
-- each other source and what it said
-- the checks and merge state
-- anything the merge will do besides land the commits, such as GitHub deleting the branch because `deleteBranchOnMerge` is on, or the PR closing a Linear issue
-
-When everything was clear this is a record, not a question, and you go on to step 5.
-If writing it shows you anything you had not weighed, it is a question after all.
-
-## 5. Merge
-
-```sh
-gh pr merge <n> --<method> --match-head-commit <headRefOid>
-```
-
-- `--match-head-commit` makes GitHub refuse the merge if anything was pushed since you checked.
-- Leave the commit title and body to GitHub's defaults unless a rule says how to write them.
-- Never `--admin`, `--auto` or `--delete-branch`, and never merge with `git merge` and a push instead.
-- Behind a merge queue the command queues the PR rather than merging it: say so, and that it lands only once the queue's checks pass.
-- On a refusal, stop and show it; do not retry with other flags.
-
-## 6. Confirm and report
-
-`gh pr view <n> --json state,mergedAt,mergeCommit,baseRefName`, and confirm it is `MERGED` into the target you checked.
-
-Report the PR URL, the method and the rule that named it, and the merge commit.
+The PR URL, the method and the rule line that named it (`rule.source`), and the merge commit, or that it is queued.
+Name anything the merge did besides land the commits, such as GitHub deleting the branch because `github.settings.deleteBranchOnMerge` is on, or the PR closing a Linear issue.
 Then whatever the pack's rules say follows a merge, such as moving the other issues the PR shipped in the tracker.
 When a rule pairs this merge with another, such as a hotfix that goes into two branches, name the PR still waiting.
 It needs its own ask: never merge it on the strength of this one.

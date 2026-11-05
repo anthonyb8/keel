@@ -46,6 +46,8 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
 - **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`.
   The repository picks the workspace through `~/.config/keel/linear`, one line per origin glob: `*github.com[/:]anthonyb8/* ANB LINEAR_API_KEY_PERSONAL`, meaning the team key and the env var holding that workspace's key.
   A pack's `linear` file still names the team for the repositories it owns. The key is sent in a header file, never on a command line, and never printed.
+- **Merges.** `keel merge <n>` is `/merge`'s clear path: it merges the PR with the method the pack's `merge` file names for its target and head, one `<target> <head glob> squash|merge|rebase|ask` per line with the first match winning, when GitHub allows it, the PR is ready, no PR from the same head goes elsewhere, and earlier PRs under that line landed the same way.
+  Anything else exits 2 with the reason and every fact it gathered, and `/merge` takes it to the user. git-guard refuses it inside a run.
 
 ## The four layers
 
