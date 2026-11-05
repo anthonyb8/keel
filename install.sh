@@ -28,13 +28,14 @@ PAIRS=(
   "$ROOT/rails/settings.json|$CONFIG/settings.json"
   "$ROOT/rails/bin/keel|$HOME/.local/bin/keel"
   "$ROOT/method|$HOME/.keel/method"
+  "$ROOT/trust|$HOME/.keel/trust"
 )
 
 # Each skill and agent is linked on its own into real directories, so what
 # Claude Code installs there never lands in the repository.
 method_pairs() {
   local s a
-  for s in "$ROOT"/method/skills/*/; do
+  for s in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/; do
     [[ -f "$s/SKILL.md" ]] || continue
     s="${s%/}"
     echo "$s|$CONFIG/skills/$(basename "$s")"

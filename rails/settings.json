@@ -261,7 +261,9 @@
       "Bash(git update-ref refs/heads/staging:*)",
       "Bash(git update-ref refs/heads/main:*)",
       "Bash(git -C * update-ref)",
-      "Bash(git -C * update-ref *)"
+      "Bash(git -C * update-ref *)",
+      "Edit(~/.local/state/keel/runs/**)",
+      "Write(~/.local/state/keel/runs/**)"
     ],
     "ask": [
       "Bash(gh pr merge:*)"
@@ -332,6 +334,17 @@
             "type": "command",
             "command": "\"$HOME/.local/bin/keel\" hook git-guard",
             "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook stop",
+            "timeout": 900
           }
         ]
       }

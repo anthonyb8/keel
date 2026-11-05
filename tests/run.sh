@@ -43,7 +43,7 @@ check "settings.json is valid JSON, or Claude Code would drop every permission" 
 # A hook left out never fires, and one that runs harness acts on harness's
 # trees: each event must reach the keel hook that handles it, and only that.
 eq "settings wire each hook event to keel's hook for it, never harness's" \
-  "$(printf '%s\n' 'PreToolUse git-guard' 'SessionStart context' 'SubagentStart context' 'SubagentStop subagent-stop' 'WorktreeCreate worktree-create' 'WorktreeRemove worktree-remove')" \
+  "$(printf '%s\n' 'PreToolUse git-guard' 'SessionStart context' 'Stop stop' 'SubagentStart context' 'SubagentStop subagent-stop' 'WorktreeCreate worktree-create' 'WorktreeRemove worktree-remove')" \
   "$(jq -r '.hooks | to_entries[] | .key + " " + (.value[].hooks[].command | ltrimstr("\"$HOME/.local/bin/keel\" hook "))' "$HOME/.keel/claude/settings.json" | sort)"
 eq "git-guard guards Bash and blocks the command when it cannot run" "Bash block" \
   "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].onFailure)"' "$HOME/.keel/claude/settings.json")"
@@ -53,7 +53,7 @@ refute "--check fails on a removed link" "$ROOT/install.sh" --check
 check "and names it MISSING" grep -qx "MISSING: $HOME/.keel/claude/CLAUDE.md" <<<"$out"
 "$ROOT/install.sh" >/dev/null
 eq "install puts it back" "$ROOT/rules/CLAUDE.md" "$(readlink "$HOME/.keel/claude/CLAUDE.md")"
-eq "install links every skill in method/skills" "$(cd "$ROOT/method/skills" && ls)" "$(cd "$HOME/.keel/claude/skills" && ls)"
+eq "install links every skill in method/skills and trust/skills" "$(for d in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/; do basename "$d"; done | sort)" "$(ls "$HOME/.keel/claude/skills")"
 eq "each to its directory in the repository" "$ROOT/method/skills/spec" "$(readlink "$HOME/.keel/claude/skills/spec")"
 eq "and the keel-agent subagent" "$ROOT/method/agents/keel-agent.md" "$(readlink "$HOME/.keel/claude/agents/keel-agent.md")"
 check "and method/, where the router and skills read playbooks by an absolute path" test -f "$HOME/.keel/method/playbooks/issue.md"
@@ -557,7 +557,7 @@ eq "status follows docs/status.md version 1" "true" "$(st '.[0] | (["version","t
   and (.steps|type) == "array" and all(.steps[]; (.title|type) == "string" and (.state|IN("pending","doing","done","skipped")) and has("reason"))
   and (.current == null or (.current|type) == "number")
   and all(.started_at, .updated_at; test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and (.stale|type) == "boolean"
-  and .attention == null and .done_check == null and .verifier == null and .gate == null')"
+  and .attention == 0 and .done_check == null and .contract_hash == null and .verifier == null and .gate == null')"
 refute "a second run in the same tree is refused" in_r1 run start --playbook issue --goal g --steps "$T/steps.md"
 in_r1 run step 1 doing
 eq "a step being worked on is the current one" "1 doing" "$(st '.[0] | "\(.current) \(.steps[0].state)"')"
@@ -571,6 +571,9 @@ eq "and current moves past it" "3" "$(st '.[0].current')"
 eq "status for a path inside the tree finds its run" "bug-fix" "$(mkdir -p "$R1/src" && cd "$R1/src" && "$K" status --json . | jq -r '.[0].playbook')"
 eq "status for another tree lists nothing" "[]" "$("$K" status --json "$OTHER")"
 eq "status with no path lists every run" "1" "$("$K" status --json | jq length)"
+
+eq "a skipped step is flagged for attention in the log" "1|skipped step 2|the repro already names the cause" \
+  "$(st '.[0].attention')|$(cut -f3,4 --output-delimiter='|' "$(in_r1 run dir)/decisions.tsv")"
 
 section "runs keep their trees"
 listed=$(cd "$ACME" && $K sweep 2>&1)
@@ -627,6 +630,89 @@ while kill -0 "$writer" 2>/dev/null; do jq -e .steps "$f" >/dev/null 2>&1 || tor
 wait "$writer"
 eq "a reader polling during writes never sees a partial file" "0" "$torn"
 (cd "$R2" && "$K" run stop "done" >/dev/null)
+
+section "contracts"
+R3=$(create "$ACME" feature/run-3)
+in_r3() { (cd "$R3" && "$K" "$@"); }
+st3() { (cd "$R3" && "$K" status --json .) | jq -rc "$1"; }
+hook_stop() { jq -n --arg c "$R3" '{hook_event_name:"Stop",cwd:$c,stop_hook_active:false}' | $K hook stop; }
+last_row() { tail -1 "$(in_r3 run dir)/decisions.tsv" | cut -f"$1" --output-delimiter='|'; }
+contract() { # contract <done command> [budget] -> a contract file
+  {
+    printf 'goal: done.txt exists\ndone: %s\ngive-up: never\n' "$1"
+    [[ -z "${2:-}" ]] || printf 'budget: %s\n' "$2"
+    printf 'grants: commit\n\nNotes.\n'
+  } >"$T/contract.md"
+  echo "$T/contract.md"
+}
+printf 'goal: g\n\ndone: true\n' >"$T/no-done.md"
+err=$(in_r3 run start --playbook issue --goal g --steps "$T/steps.md" --contract "$T/no-done.md" 2>&1)
+check "a contract with no done: line in its header is refused" grep -q "no done: line" <<<"$err"
+err=$(in_r3 run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract "test -f done.txt" 2x)" 2>&1)
+check "a budget that is not a duration is refused" grep -q "not a duration" <<<"$err"
+printf 'done: false\ngrants: merge\n' >"$T/bad-grant.md"
+err=$(in_r3 run start --playbook issue --goal g --steps "$T/steps.md" --contract "$T/bad-grant.md" 2>&1)
+check "a grant keel does not know is refused" grep -q "grants: merge is not" <<<"$err"
+err=$(in_r3 run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract true)" 2>&1)
+check "a done check that already passes is refused" grep -q "already passes" <<<"$err"
+eq "and starts no run" "[]" "$(in_r3 status --json .)"
+in_r3 run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract true)" --allow-passing >/dev/null
+check "unless --allow-passing" test "$(st3 '.[0].contract_hash')" != null
+in_r3 run stop stopped >/dev/null
+
+in_r3 run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null
+eq "a run with no contract is never held" "" "$(hook_stop)"
+in_r3 run stop "done" >/dev/null
+in_r3 run start --playbook issue --goal "done.txt exists" --steps "$T/steps.md" --contract "$(contract 'test -f done.txt && echo checked || { echo "no done.txt yet"; exit 3; }' 1h)" >/dev/null
+eq "start records the contract's hash" "$(sha256sum "$T/contract.md" | cut -d' ' -f1)" "$(st3 '.[0].contract_hash')"
+cp "$T/contract.md" "$T/approved.md"
+refute "a second contracted run in a held tree is refused" in_r3 run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract "touch $T/ran; false")"
+check "before its done command ever runs" test ! -e "$T/ran"
+cp "$T/approved.md" "$T/contract.md"
+out=$(hook_stop)
+eq "a failing done check blocks the turn" "block" "$(jq -r .decision <<<"$out")"
+check "quoting the failure" grep -qF "no done.txt yet" <<<"$(jq -r .reason <<<"$out")"
+check "and naming the give-up file" grep -qF "$(in_r3 run dir)/giveup.md" <<<"$(jq -r .reason <<<"$out")"
+check "and the done command, so a check that fails silently still says what to fix" grep -qF 'test -f done.txt' <<<"$(jq -r .reason <<<"$out")"
+eq "the check is recorded in status, at HEAD" "3 false $(git -C "$R3" rev-parse HEAD)" "$(st3 '.[0].done_check | "\(.exit) \(.passed) \(.head)"')"
+eq "logged and flagged for attention" "done check|fail, exit 3|yes" "$(last_row 3,6,7)"
+eq "and counted" "1" "$(st3 '.[0].attention')"
+in_r3 run decide "kept the old parser" --why "the new one drops comments" --evidence src/parse.ts:12 --attention
+eq "decide adds the agent's own row" "kept the old parser|the new one drops comments|src/parse.ts:12" "$(last_row 3,4,5)"
+eq "and --attention counts it" "2" "$(st3 '.[0].attention')"
+refute "a decision needs its evidence" in_r3 run decide "x" --why y
+touch "$R3/done.txt"
+eq "a passing done check lets the turn end" "" "$(hook_stop)"
+eq "and records the pass" "0 true checked" "$(st3 '.[0].done_check | "\(.exit) \(.passed) \(.tail)"')"
+eq "logged without a flag" "pass|" "$(last_row 6,7)"
+eq "and not counted" "2" "$(st3 '.[0].attention')"
+eq "a pass does not end the run on its own" "active" "$(st3 '.[0].state')"
+rm "$R3/done.txt"
+sed -i 's/^done: .*/done: touch done.txt/' "$(in_r3 run dir)/contract.md"
+out=$(hook_stop)
+eq "a contract changed mid-run blocks the turn" "block" "$(jq -r .decision <<<"$out")"
+eq "and is flagged" "contract changed mid-run|yes" "$(last_row 3,7)"
+check "and its changed command never runs" test ! -f "$R3/done.txt"
+cp "$T/contract.md" "$(in_r3 run dir)/contract.md"
+echo "the parser cannot be fixed without the vendor" >"$(in_r3 run dir)/giveup.md"
+eq "a written give-up lets the failing turn end" "" "$(hook_stop)"
+eq "and stops the run with the reason" "stopped gave up" "$(st3 '.[0] | "\(.state) \(.reason)"')"
+eq "flagged for attention" "gave up|yes" "$(last_row 3,7)"
+eq "a run that gave up stays listed for its attention" "1" "$(in_r3 status --json . | jq length)"
+eq "but no longer holds the tree" "" "$(cd "$ACME" && $K sweep 2>&1 | grep -F "kept $R3: run")"
+rm "$(in_r3 run dir)/giveup.md"
+eq "a stopped run is never held again" "" "$(hook_stop)"
+in_r3 run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract "test -f done.txt" 1h30m)" >/dev/null
+eq "a new run archives the one that gave up" "stopped" "$(jq -r 'select(.reason == "gave up") | .state' "$RUNS"/archive/*/*/status.json)"
+eq "a budget not yet spent still holds the turn" "block" "$(hook_stop | jq -r .decision)"
+# Started two hours ago, past its budget of an hour and a half.
+jq --arg t "$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)" '.started_at = $t' "$(in_r3 run dir)/status.json" >"$T/backdated.json"
+mv "$T/backdated.json" "$(in_r3 run dir)/status.json"
+out=$(hook_stop)
+eq "a spent budget lets the failing turn end" "null" "$(jq -r .decision <<<"$out")"
+check "asking for a give-up write-up" grep -q "giveup.md" <<<"$(jq -r .systemMessage <<<"$out")"
+eq "and fails the run for its budget" "failed budget" "$(st3 '.[0] | "\(.state) \(.reason)"')"
+in_r3 run stop failed >/dev/null
 
 section "playbooks"
 # The router matches only what the index lists, and copies numbered steps.

@@ -132,6 +132,22 @@ check "with a goal" test -n "$(jq -r '.[0].goal // empty' <<<"$runs")"
 eq "and the bug-fix playbook's steps" "$(sed -n 's/^[0-9]\. //p' "$ROOT/method/playbooks/bug-fix.md")" "$(jq -r '.[0].steps[].title' <<<"$runs")"
 (cd "$OTHER" && keel run stop stopped >/dev/null 2>&1)
 
+section "contracts"
+C1="$T/work/other/contracted"
+git clone -q "$T/remotes/other/app" "$C1"
+printf 'Make the file.\n' >"$T/c-steps.md"
+printf 'goal: proof.txt exists\ndone: test -f proof.txt\nbudget: 15m\ngrants: none\n' >"$T/c-contract.md"
+(cd "$C1" && keel run start --playbook autonomous-run --goal "proof.txt exists" --steps "$T/c-steps.md" --contract "$T/c-contract.md" >/dev/null)
+# The hook's reason quotes only the check's output, which `test -f` leaves
+# empty, so the prompt names the check the session will be held to.
+ask "$C1" "This tree's run is done when \`test -f proof.txt\` passes. For now, reply with only the word READY and do not run any tool." \
+  --allowedTools "Bash(touch proof.txt)" >/dev/null
+eq "a session under a contract is held while its done check fails, then ends its turn once it passes" "fail pass" \
+  "$(cut -f6 "$(cd "$C1" && keel run dir)/decisions.tsv" | sed 's/,.*//' | uniq | paste -sd' ')"
+eq "with the pass recorded at its HEAD" "true $(git -C "$C1" rev-parse HEAD)" \
+  "$(keel status --json "$C1" | jq -r '.[0].done_check | "\(.passed) \(.head)"')"
+(cd "$C1" && keel run stop "done" >/dev/null)
+
 echo
 echo "keel-held trees left leased:"
 keel_leases "$ACME" | sed 's/^/  /'

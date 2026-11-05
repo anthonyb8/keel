@@ -27,9 +27,11 @@
 #                             start a run in this tree, recorded under ~/.local/state/keel/runs
 #   keel run step <n> doing|done|skip <reason>
 #   keel run pause            pause the run; a resume note on stdin goes into its folder
+#   keel run decide "<decision>" --why <text> --evidence <ref> [--result <text>] [--attention]
+#                             log a decision to the run's decisions.tsv
 #   keel run stop done|stopped|failed [--note <text>] [--tree <path>]
 #                             end the run and archive it
-#   keel status --json [path] every active or paused run, or the one holding path; docs/status.md
+#   keel status --json [path] every run not yet archived, or the one for path; docs/status.md
 #   keel stack up [args]      start this tree's stack detached through the pack's stack script,
 #                             wait until it serves, print its URL; args go to the script
 #   keel stack down           stop it
@@ -45,6 +47,7 @@
 #                               worktree-remove  WorktreeRemove
 #                               subagent-stop    SubagentStop
 #                               git-guard        PreToolUse on Bash
+#                               stop             Stop: holds a contracted run's turn until its done check passes
 #   keel help                 print this help
 #
 # A pack is a directory registered under $KEEL_PACKS (default
@@ -983,23 +986,39 @@ run_holding() {
 }
 
 run_start() {
-  local playbook="" goal="" steps="" replace=0 tree branch dir held
+  local playbook="" goal="" steps="" replace=0 contract="" allow_passing=0 tree branch dir held done_cmd=""
   while (($#)); do
     case "$1" in
     --playbook) playbook="${2:-}" && shift 2 ;;
     --goal) goal="${2:-}" && shift 2 ;;
     --steps) steps="${2:-}" && shift 2 ;;
     --replace) replace=1 && shift ;;
-    *) die "usage: keel run start --playbook <name> --goal <text> --steps <file> [--replace]" ;;
+    --contract) contract="${2:-}" && shift 2 ;;
+    --allow-passing) allow_passing=1 && shift ;;
+    *) die "usage: keel run start --playbook <name> --goal <text> --steps <file> [--contract <file> [--allow-passing]] [--replace]" ;;
     esac
   done
   [[ -n "$playbook" && -n "$goal" ]] || die "run start needs --playbook and --goal"
   [[ -f "$steps" ]] || die "run start needs --steps <file>, one step per line"
   tree=$(tree_of "$PWD")
   dir=$(run_dir "$tree")
+  if [[ "$replace" == 0 ]] && held=$(run_holding "$tree"); then
+    die "run $held already holds $tree; finish it with \`keel run stop\`, or start with --replace"
+  fi
+  # A done check that already passes would let the run end before any work.
+  if [[ -n "$contract" ]]; then
+    done_cmd=$(contract_check "$contract") || exit 1
+    if [[ "$(run_done_check "$tree" "$done_cmd" | head -1)" == 0 && "$allow_passing" == 0 ]]; then
+      die "the contract's done check already passes, so it cannot tell when the work is done; make it fail today, or pass --allow-passing"
+    fi
+  fi
   if held=$(run_holding "$tree"); then
     [[ "$replace" == 1 ]] || die "run $held already holds $tree; finish it with \`keel run stop\`, or start with --replace"
     run_archive "$dir" stopped "replaced by a new run"
+  elif [[ -f "$dir/status.json" ]]; then
+    # A run that ended on its own, by giving up or by its budget, is still
+    # listed for its Attention; a new run moves it to the archive as it is.
+    run_archive "$dir" "$(jq -r .state "$dir/status.json")" "$(jq -r '.note // ""' "$dir/status.json")"
   fi
   branch=$(git -C "$tree" symbolic-ref -q --short HEAD 2>/dev/null || echo "")
   mkdir -p "$dir"
@@ -1011,22 +1030,30 @@ run_start() {
       steps: [$steps | split("\n")[] | sub("^\\s*([0-9]+[.)]|[-*])\\s+"; "") | select(test("\\S"))
               | {title: ., state: "pending", reason: null}],
       current: null, started_at: $now, updated_at: $now, stale: false,
-      attention: null, done_check: null, verifier: null, gate: null
+      attention: 0, done_check: null, verifier: null, gate: null, contract_hash: null
     }' | write_atomic "$dir/status.json"
   [[ "$(jq '.steps | length' "$dir/status.json")" -gt 0 ]] || {
     rm -rf "$dir"
     die "the steps file holds no steps"
   }
-  echo "run $playbook started in $tree"
+  if [[ -n "$contract" ]]; then
+    cp "$contract" "$dir/contract.md"
+    run_update "$dir" '.contract_hash = $h' --arg h "$(sha256sum "$dir/contract.md" | cut -d' ' -f1)"
+  fi
+  echo "run $playbook started in $tree${contract:+, held to its contract}"
 }
 
 # The run's folder for the tree at --tree, else the current tree, when it has
 # an active or paused run.
-held_run_dir() {
+held_run_dir() { # held_run_dir <tree or ""> [any]: "any" also takes a run that has ended
   local tree="$1" dir
   tree=$(tree_of "${tree:-$PWD}")
   dir=$(run_dir "$tree")
-  run_holding "$tree" >/dev/null || die "no active run in $tree"
+  if [[ "${2:-}" == any ]]; then
+    [[ -f "$dir/status.json" ]] || die "no run in $tree"
+  else
+    run_holding "$tree" >/dev/null || die "no active run in $tree"
+  fi
   echo "$dir"
 }
 
@@ -1050,6 +1077,9 @@ run_step() {
     | .current = (if $s == "doing" then $i + 1
         else ([.steps | to_entries[] | select(.value.state == "pending" or .value.state == "doing") | .key + 1] | first) end)' \
     --argjson i "$((n - 1))" --arg s "$state" --arg r "$reason"
+  if [[ "$state" == skip ]]; then
+    log_row "$dir" "skipped step $n" "$reason" "$(jq -r ".steps[$((n - 1))].title" "$dir/status.json")" "skipped" yes
+  fi
 }
 
 # Moves a run's folder to the archive, ended, so status no longer lists it.
@@ -1079,7 +1109,7 @@ run_stop() {
     *) die "usage: keel run stop done|stopped|failed [--note <text>] [--tree <path>]" ;;
     esac
   done
-  dir=$(held_run_dir "$tree") || exit 1
+  dir=$(held_run_dir "$tree" any) || exit 1
   run_archive "$dir" "$state" "$note"
   echo "run $state; archived"
 }
@@ -1105,12 +1135,15 @@ run() {
   step) run_step "$@" ;;
   stop) run_stop "$@" ;;
   pause) run_pause "$@" ;;
-  dir) held_run_dir "${1:-}" ;;
-  *) die "usage: keel run start|step|stop|pause|dir ..." ;;
+  decide) run_decide "$@" ;;
+  dir) held_run_dir "${1:-}" any ;;
+  *) die "usage: keel run start|step|stop|pause|decide|dir ..." ;;
   esac
 }
 
-# Prints every active or paused run, or the one holding path, as a JSON array.
+# Prints every run not yet archived, or the one for path, as a JSON array: an
+# active or paused run, or one that gave up or ran out of budget, which stays
+# listed for its Attention until `keel run stop` archives it.
 # Reads files only, never git or treehouse, so treetop can poll it: staleness
 # comes from the cache `keel sweep` refreshes.
 status() {
@@ -1134,7 +1167,6 @@ status() {
   jq -n --arg path "$path" --rawfile stale "$STALE_FILE" '
     ($stale | split("\n") | map(select(. != ""))) as $stale
     | [inputs
-       | select(.state == "active" or .state == "paused")
        | .stale = (.state == "active" and (.tree as $t | $stale | index($t) != null))
        | select(.tree as $t | $path == "" or $path == $t or ($path | startswith($t + "/")))]' \
     "${files[@]}"
@@ -1155,6 +1187,149 @@ refresh_stale() {
         if [[ "$(jq -r .state "$(run_dir "$p")/status.json" 2>/dev/null)" == active ]]; then echo "$p"; fi
       done
   } | write_atomic "$STALE_FILE"
+}
+
+# Contracts: a run started with a contract is held to its done check by the
+# Stop hook, logs its decisions to decisions.tsv, and counts what needs the
+# user's attention. trust/contract.md is the template.
+
+# Prints the value of one `key:` line from the contract's header block, the
+# lines before the first blank one.
+contract_field() { # contract_field <file> <key>
+  awk -v k="$2" '
+    /^[[:space:]]*$/ { exit }
+    index($0, k ":") == 1 { sub("^" k ":[[:space:]]*", ""); print; exit }
+  ' "$1"
+}
+
+# A budget such as 4h, 90m, 1h30m or 45s, in seconds.
+budget_seconds() {
+  local b="$1" total=0 n u
+  [[ "$b" =~ ^([0-9]+[hms])+$ ]] || return 1
+  while [[ "$b" =~ ^([0-9]+)([hms])(.*)$ ]]; do
+    n=${BASH_REMATCH[1]} u=${BASH_REMATCH[2]} b=${BASH_REMATCH[3]}
+    case "$u" in
+    h) total=$((total + n * 3600)) ;;
+    m) total=$((total + n * 60)) ;;
+    s) total=$((total + n)) ;;
+    esac
+  done
+  echo "$total"
+}
+
+# Checks a contract and prints its done command, or dies saying what is wrong.
+contract_check() {
+  local file="$1" done_cmd budget grants g
+  [[ -f "$file" ]] || die "no such contract: $file"
+  done_cmd=$(contract_field "$file" "done")
+  [[ -n "$done_cmd" ]] || die "the contract has no done: line; it needs a command whose exit 0 means done"
+  budget=$(contract_field "$file" budget)
+  if [[ -n "$budget" ]]; then
+    budget_seconds "$budget" >/dev/null || die "budget: $budget is not a duration such as 4h, 90m or 1h30m"
+  fi
+  grants=$(contract_field "$file" grants)
+  for g in ${grants//,/ }; do
+    case "$g" in
+    none | commit | push | draft-pr) ;;
+    *) die "grants: $g is not none, or one of commit, push, draft-pr" ;;
+    esac
+  done
+  echo "$done_cmd"
+}
+
+# Runs the done command from the tree's root with a timeout; prints its exit
+# code on the first line and the last 40 lines of its output after it.
+run_done_check() { # run_done_check <tree> <command>
+  local out code=0
+  out=$(cd "$1" && timeout "${KEEL_DONE_TIMEOUT:-600}" bash -c "$2" 2>&1) || code=$?
+  echo "$code"
+  tail -n 40 <<<"$out"
+}
+
+# One row in the run's decisions.tsv: time, step, decision, why, evidence,
+# result, attention. Tabs and newlines in a field become spaces, so a row
+# stays a row. The attention count in status.json follows the flagged rows.
+log_row() { # log_row <run dir> <decision> <why> <evidence> <result> <attention: yes|"">
+  local dir="$1" step
+  step=$(jq -r '.current // ""' "$dir/status.json")
+  {
+    printf '%s' "$(now)"
+    printf '\t%s' "$step" "${2//[$'\t\n']/ }" "${3//[$'\t\n']/ }" "${4//[$'\t\n']/ }" "${5//[$'\t\n']/ }" "$6"
+    printf '\n'
+  } >>"$dir/decisions.tsv"
+  run_update "$dir" '.attention = $n' --argjson n "$(awk -F'\t' '$7 == "yes"' "$dir/decisions.tsv" | wc -l)"
+}
+
+run_decide() {
+  local decision="${1:-}" why="" evidence="" result="" attention="" dir
+  [[ -n "$decision" && "$decision" != --* ]] || die 'usage: keel run decide "<decision>" --why <text> --evidence <ref> [--result <text>] [--attention]'
+  shift
+  while (($#)); do
+    case "$1" in
+    --why) why="${2:-}" && shift 2 ;;
+    --evidence) evidence="${2:-}" && shift 2 ;;
+    --result) result="${2:-}" && shift 2 ;;
+    --attention) attention=yes && shift ;;
+    *) die 'usage: keel run decide "<decision>" --why <text> --evidence <ref> [--result <text>] [--attention]' ;;
+    esac
+  done
+  [[ -n "$why" && -n "$evidence" ]] || die "a decision needs --why and --evidence"
+  dir=$(held_run_dir "") || exit 1
+  log_row "$dir" "$decision" "$why" "$evidence" "$result" "$attention"
+}
+
+# The Stop hook. For an active run with a contract in the session's tree, the
+# turn ends only once the done check passes, the agent has written giveup.md,
+# or the budget is spent; otherwise it is blocked with the failing output. A
+# contract changed since the run started is never run.
+hook_stop() {
+  local input cwd tree dir done_cmd code out tail budget started elapsed
+  input=$(cat)
+  cwd=$(jq -r .cwd <<<"$input")
+  tree=$(tree_of "$cwd" 2>/dev/null) || return 0
+  dir=$(run_dir "$tree")
+  [[ -f "$dir/contract.md" && -f "$dir/status.json" ]] || return 0
+  [[ "$(jq -r .state "$dir/status.json")" == active ]] || return 0
+
+  if [[ "$(sha256sum "$dir/contract.md" | cut -d' ' -f1)" != "$(jq -r .contract_hash "$dir/status.json")" ]]; then
+    log_row "$dir" "contract changed mid-run" "its hash no longer matches the one recorded at start" "$dir/contract.md" "blocked; done check not run" yes
+    jq -n --arg r "The run's contract at $dir/contract.md changed after the run started, so its done check was not run. Put the contract back as it was approved, or stop and ask for a new run." \
+      '{decision: "block", reason: $r}'
+    return 0
+  fi
+
+  done_cmd=$(contract_field "$dir/contract.md" "done")
+  out=$(run_done_check "$tree" "$done_cmd")
+  code=$(head -1 <<<"$out")
+  tail=$(tail -n +2 <<<"$out")
+  run_update "$dir" '.done_check = {exit: $code, passed: ($code == 0), head: $head, at: $now, tail: $tail}' \
+    --argjson code "$code" --arg head "$(git -C "$tree" rev-parse HEAD 2>/dev/null)" --arg tail "$tail"
+  if [[ "$code" == 0 ]]; then
+    log_row "$dir" "done check" "the Stop hook runs it before the turn ends" "$done_cmd" "pass" ""
+    return 0
+  fi
+  log_row "$dir" "done check" "the Stop hook runs it before the turn ends" "$done_cmd" "fail, exit $code" yes
+
+  if [[ -f "$dir/giveup.md" ]]; then
+    log_row "$dir" "gave up" "$(head -c 300 "$dir/giveup.md")" "$dir/giveup.md" "stopped" yes
+    run_update "$dir" '.state = "stopped" | .reason = "gave up"'
+    return 0
+  fi
+  budget=$(contract_field "$dir/contract.md" budget)
+  if [[ -n "$budget" ]]; then
+    started=$(date -d "$(jq -r .started_at "$dir/status.json")" +%s)
+    elapsed=$(($(date +%s) - started))
+    if ((elapsed >= $(budget_seconds "$budget"))); then
+      log_row "$dir" "budget spent" "$budget passed with the done check still failing" "$done_cmd" "failed; giveup.md asked for" yes
+      run_update "$dir" '.state = "failed" | .reason = "budget"'
+      jq -n --arg r "The run's budget of $budget is spent and the done check still fails, so the run has failed. Write $dir/giveup.md saying where it got to and why it is stuck." \
+        '{systemMessage: $r}'
+      return 0
+    fi
+  fi
+  jq -n --arg r "The done check \`$done_cmd\` fails (exit $code): $tail
+
+Keep going, or write $dir/giveup.md saying why you are stuck." '{decision: "block", reason: $r}'
 }
 
 cmd="${1:-}"
@@ -1197,6 +1372,7 @@ hook)
   worktree-remove) hook_worktree_remove ;;
   subagent-stop) hook_subagent_stop ;;
   git-guard) hook_git_guard ;;
+  stop) hook_stop ;;
   *) die "unknown hook: ${1:-}" ;;
   esac
   ;;
