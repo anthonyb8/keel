@@ -255,6 +255,15 @@ check "and up shows its log" grep -q "stack broke" <<<"$err"
 jq -n --arg p "$KT" '{hook_event_name:"WorktreeRemove",worktree_path:$p}' | $K hook worktree-remove >/dev/null 2>&1
 refute "removing the tree stops its stack" curl -s -o /dev/null "$out"
 refute "up refuses a repo with no stack script" bash -c "cd '$OTHER' && $K stack up"
+# A stack whose new session starts late, as on a loaded machine, is still
+# starting, not dead: setsid made slow takes the race out of chance.
+mkdir -p "$T/slow"
+printf '#!/bin/sh\nsleep 1\nexec %s "$@"\n' "$(command -v setsid)" >"$T/slow/setsid"
+chmod +x "$T/slow/setsid"
+KS=$(create "$ACME" feature/acme-3-slow)
+out=$(cd "$KS" && PATH="$T/slow:$PATH" $K stack up 2>/dev/null)
+eq "up waits for a stack whose session starts late" "http://127.0.0.1:$STACK_PORT/" "$out"
+(cd "$KS" && $K stack down >/dev/null)
 
 section "stack release"
 : >"$T/released"
