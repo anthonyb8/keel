@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# keel: the front door to sessions that run on keel's rules and rails.
+#
+#   keel claude [args]   run claude on keel's config dir, ~/.keel/claude
+#   keel help            print this help
+set -euo pipefail
+
+# The config dir is set here and nowhere else: Claude Code ignores
+# CLAUDE_CONFIG_DIR in project and local settings, and setting it in the shell
+# would move every plain `claude` off harness too.
+
+usage() {
+  awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0"
+}
+
+case "${1:-}" in
+claude)
+  shift
+  CLAUDE_CONFIG_DIR="$HOME/.keel/claude" exec claude "$@"
+  ;;
+help | -h | --help)
+  usage
+  ;;
+*)
+  usage >&2
+  exit 1
+  ;;
+esac

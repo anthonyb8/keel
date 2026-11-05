@@ -1,0 +1,16 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: git ls-files -z '*.sh' rails/bin | xargs -0 shellcheck -x
+      - name: tests
+        run: tests/run.sh
