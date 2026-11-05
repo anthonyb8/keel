@@ -5,5 +5,6 @@
 set -euo pipefail
 cd "$1"
 # Tracked and new files, not ignored ones, so stray editor files in a variant
-# do not change the hash CI computes from a clean checkout.
-git ls-files -z -co --exclude-standard -- method trust | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+# do not change the hash CI computes from a clean checkout. The sort is pinned
+# to the C locale, so every machine orders the files, and hashes them, alike.
+git ls-files -z -co --exclude-standard -- method trust | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1

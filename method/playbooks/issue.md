@@ -17,9 +17,9 @@ When the conversation already holds a step's output for this issue, start after 
 9. Move it to In Progress once, after the first real run and only from Backlog or Todo: `keel linear update <ID> --state "In Progress"`.
 10. Stop before shipping, with everything uncommitted; shipping is `/ship`, on the user's ask **(stop)**.
 
-Under a contract that grants them, go on instead of stopping before `/ship`: `/verify`, `keel gate` and `/verify` again if the tree changed, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does.
+Under a contract that grants them, go on instead of stopping before `/ship`: `/verify` until it passes, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does.
 
 ## Reply
 
 What was built, the tests added and what the audit kept, rewrote or deleted, the journey tests with their screenshots, what was not verified, and the app's URL and sign-in when the stack is up.
-Past In Progress the issue's status follows the PR: never move it forward on a gate result or a finished task alone, and never backwards unasked.
+Past In Progress the issue's status follows the PR: never move it forward on a verifier's pass or a finished task alone, and never backwards unasked.

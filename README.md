@@ -30,7 +30,7 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
 - **Runs.** Every task a playbook routes is a run, recorded outside the tree under `~/.local/state/keel/runs/`. `keel status --json` lists them from files alone, fast enough to poll; [docs/status.md](docs/status.md) is the schema treetop reads.
   While a run is active or paused, sweep, SubagentStop and WorktreeRemove keep its tree; a run whose session died shows as `stale` and is cleared only by hand, with `keel run stop stopped --tree <path>`.
 - **Contracts.** A run started with `--contract` (template: `trust/contract.md`) is held by the Stop hook: the session cannot end its turn until the contract's `done:` command passes, it writes `giveup.md`, or its `budget:` is spent. Decisions go to the run's `decisions.tsv`, and what needs the user is counted as Attention; `/catchup` reviews the trail read-only.
-- **Grants.** Inside a contracted run, git-guard allows only what the contract's `grants:` cover (`commit`, `push`, `draft-pr`), each in one narrow form, and a push or draft PR only once a fresh `keel-verifier` (`/verify`) and `keel gate` have passed on that exact tree. Merging is never done from a run.
+- **Grants.** Inside a contracted run, git-guard allows only what the contract's `grants:` cover (`commit`, `push`, `draft-pr`), each in one narrow form, and a push or draft PR only once a fresh `keel-verifier` (`/verify`) has passed on that exact tree. Merging is never done from a run.
 - **Reflect.** `/reflect` turns a session's or run's mistakes into proposed edits, each tied to evidence and placed at the strongest level that would have prevented it (rails, check, playbook, skill, rule). A finding seen once is held in the private `~/.local/state/keel/learning/seen.tsv`; it is proposed only when seen again, and applied only on approval, in a keel worktree.
 - **Evals.** `keel eval <playbook> --variant <checkout>` runs the playbook's canned task on the installed keel and the variant, scores every result with scripted checks and one blind judge, and writes a result under `learning/evals/results/`. CI fails a PR that changes `method/` or `trust/` without a result for each playbook it reaches.
 - **Trees.** In a keel session, `EnterWorktree`, `claude --worktree` and subagents with worktree isolation lease a pool tree from treehouse, on a named branch off the pack's base.
@@ -41,8 +41,6 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
 - **Stacks.** `keel stack up` starts the tree's stack through the pack's `stack` script and prints its URL once it serves; `keel stack down` stops it.
   `keel e2e` runs browser tests against it from a container on no network but the stack's ports.
   keel's stack state lives in the tree's git dir as `keel-stack`, apart from harness's.
-- **Gate.** `keel gate "<intent>"` runs no-mistakes on the branch against the pack's base, skipping rebase, push, PR and CI unless `KEEL_GATE_SKIP` says otherwise, so nothing reaches origin.
-  `keel fold <fix> <target>` folds a gate fix commit into the commit it fixes, for unpushed history only, and only when the final tree comes out unchanged.
 - **git-guard.** A `PreToolUse` hook refuses any merge, rebase, cherry-pick or revert that would move a protected branch: the pack's base, the default branch and the pack's `protected` list, as `keel protected` prints them.
   What it cannot place, such as a git call inside `bash -c`, it refuses rather than guesses.
 - **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`.
@@ -51,7 +49,7 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
 
 ## The four layers
 
-- **Rails** keep a session inside the lines whatever it decides: permission lists, trees, gates and git-guard.
+- **Rails** keep a session inside the lines whatever it decides: permission lists, trees and git-guard.
 - **Method** picks how a task is done: one front door that routes to a playbook, and the skills those playbooks run.
 - **Trust** lets a run be left alone: a contract, a done check, a decision log and an independent verifier.
 - **Learning** turns what a session taught into edits to the rules, held to a blind eval.

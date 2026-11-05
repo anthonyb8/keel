@@ -271,120 +271,6 @@ check "and says why" grep -q "no @playwright/test" <<<"$err"
 if err=$(cd "$ACME" && $K e2e -e NOEQUALS true 2>&1); then fail "e2e refuses an -e without a value"; else pass "e2e refuses an -e without a value"; fi
 check "and says how to use it" grep -q "usage: keel e2e" <<<"$err"
 
-section "gate"
-out=$(cd "$ACME" && $K gate "Fix the parser" --dry-run)
-check "the gate initialises a repo that has no gate" grep -q "^no-mistakes init$" <<<"$out"
-check "the gate targets the pack's base" grep -q -- "--base-branch develop" <<<"$out"
-check "the gate skips rebase, push, pr and ci by default" grep -q -- "--skip rebase\\\\,push\\\\,pr\\\\,ci" <<<"$out"
-out=$(cd "$ACME" && KEEL_GATE_SKIP=ci HARNESS_GATE_SKIP=push $K gate "Fix the parser" --dry-run)
-check "KEEL_GATE_SKIP sets what the gate skips, and HARNESS_GATE_SKIP does not" grep -q -- "--skip ci " <<<"$out"
-out=$(cd "$OTHER" && $K gate "Fix it" --dry-run)
-check "with no pack the gate leaves the base to no-mistakes" test -z "$(grep -- --base-branch <<<"$out")"
-# Without its own check the gate would still fail here, for want of a real
-# no-mistakes, so the usage line is what shows the intent was asked for.
-if err=$(cd "$ACME" && $K gate 2>&1); then fail "the gate refuses to run without an intent"; else pass "the gate refuses to run without an intent"; fi
-check "and says how to use it" grep -q "usage: keel gate" <<<"$err"
-
-section "gate after a fold"
-# A stub no-mistakes reports the run and sync state it is given, and on a run
-# records whether the gate's copy was there, then pushes the head the way a
-# started run does unless NM_RUN_CODE makes it fail first.
-mkdir -p "$T/stub"
-cat >"$T/stub/no-mistakes" <<'SH'
-#!/bin/sh
-gate=$(git remote get-url no-mistakes)
-branch=$(git symbolic-ref --short HEAD)
-case "$1 $2" in
-"axi status") printf 'run:\n  id: "r1"\n  status: %s\nbranch_sync:\n  state: %s\n' "${NM_RUN:-completed}" "${NM_SYNC:-custody_returned}" ;;
-"axi run")
-  git --git-dir="$gate" rev-parse -q --verify "refs/heads/$branch" >"$T_LOG" || echo absent >"$T_LOG"
-  [ "${NM_RUN_CODE:-0}" = 0 ] || exit "$NM_RUN_CODE"
-  git push -q "$gate" "HEAD:refs/heads/$branch"
-  ;;
-esac
-SH
-chmod +x "$T/stub/no-mistakes"
-export T_LOG="$T/nm.log"
-git init -q --bare "$T/gate.git"
-G="$T/work/acme/folded"
-git clone -q "$T/remotes/acme/app" "$G"
-git -C "$G" remote add no-mistakes "$T/gate.git"
-git -C "$G" switch -q -c feature/x origin/develop
-echo a >"$G/a" && git -C "$G" add a && git -C "$G" commit -qm "feature"
-echo fix >>"$G/a" && git -C "$G" commit -qam "no-mistakes(review): fix"
-OLD=$(git -C "$G" rev-parse HEAD)
-git -C "$G" push -q no-mistakes HEAD:refs/heads/feature/x
-git -C "$G" reset -q --soft origin/develop && git -C "$G" commit -qm "feature, folded"
-gate_in() { (cd "$G" && PATH="$T/stub:$PATH" "$@"); }
-copy() { git --git-dir="$T/gate.git" rev-parse -q --verify "refs/heads/feature/x" || echo absent; }
-
-out=$(gate_in "$K" gate "Fold" --dry-run)
-check "a dry run names the folded-away copy it would clear" grep -q "^clear the gate's copy of feature/x at $OLD$" <<<"$out"
-eq "and a dry run leaves it" "$OLD" "$(copy)"
-out=$(NM_RUN=running gate_in "$K" gate "Fold" --dry-run)
-check "a run in flight keeps the copy" test -z "$(grep "^clear" <<<"$out")"
-out=$(NM_SYNC=pipeline_owned gate_in "$K" gate "Fold" --dry-run)
-check "gate fixes not yet brought back keep the copy" test -z "$(grep "^clear" <<<"$out")"
-
-if NM_RUN_CODE=3 gate_in "$K" gate "Fold" >/dev/null 2>&1; then fail "a run that fails to start fails the gate"; else pass "a run that fails to start fails the gate"; fi
-eq "and puts the copy back" "$OLD" "$(copy)"
-gate_in "$K" gate "Fold" >/dev/null 2>&1
-eq "the run starts with the copy cleared" "absent" "$(cat "$T_LOG")"
-eq "the gate then holds the folded head" "$(git -C "$G" rev-parse HEAD)" "$(copy)"
-eq "the folded-away copy is archived where no-mistakes archives one" "$OLD" \
-  "$(git --git-dir="$T/gate.git" rev-parse "refs/tags/no-mistakes-abandoned/feature/x/$OLD")"
-
-echo b >"$G/b" && git -C "$G" add b && git -C "$G" commit -qm "more"
-out=$(gate_in "$K" gate "More" --dry-run)
-check "a branch that only moved ahead keeps the copy" test -z "$(grep "^clear" <<<"$out")"
-git -C "$G" switch -q -c elsewhere origin/develop
-echo c >"$G/c" && git -C "$G" add c && git -C "$G" commit -qm "elsewhere"
-git -C "$G" push -q no-mistakes HEAD:refs/heads/feature/y
-git -C "$G" switch -q -c feature/y origin/develop && git -C "$G" branch -q -D elsewhere
-echo d >"$G/d" && git -C "$G" add d && git -C "$G" commit -qm "y"
-out=$(gate_in "$K" gate "Y" --dry-run)
-check "a copy this branch never held is left for no-mistakes" test -z "$(grep "^clear" <<<"$out")"
-
-section "fold"
-F="$T/work/fold"
-git init -q --bare "$T/fold-origin.git"
-git clone -q "$T/fold-origin.git" "$F" 2>/dev/null
-echo base >"$F/base" && git -C "$F" add base && git -C "$F" commit -qm "base"
-git -C "$F" push -q origin HEAD:refs/heads/main
-git -C "$F" switch -q -c feature/f
-echo a >"$F/a" && git -C "$F" add a && git -C "$F" commit -qm "END-1: a"
-echo b >"$F/b" && git -C "$F" add b && git -C "$F" commit -qm "END-2: b"
-echo a2 >>"$F/a" && git -C "$F" commit -qam "no-mistakes(review): fix a"
-echo b2 >>"$F/b" && git -C "$F" commit -qam "no-mistakes(document): fix b"
-TREE=$(git -C "$F" rev-parse "HEAD^{tree}")
-# The gate has seen the branch: its remote holds a copy, which does not count.
-git init -q --bare "$T/fold-gate.git"
-git -C "$F" remote add no-mistakes "$T/fold-gate.git"
-git -C "$F" push -q no-mistakes HEAD:refs/heads/feature/f
-git -C "$F" fetch -q no-mistakes
-fold_in() { (cd "$F" && $K fold "$@"); }
-subjects() { git -C "$F" log --format=%s origin/main..HEAD | tr '\n' '|'; }
-
-check "fold moves a fix into an earlier commit" fold_in ":/fix a" ":/END-1"
-eq "the fix is gone into its target" "no-mistakes(document): fix b|END-2: b|END-1: a|" "$(subjects)"
-eq "the final tree is unchanged" "$TREE" "$(git -C "$F" rev-parse "HEAD^{tree}")"
-eq "the target now holds the fix" "$(printf 'a\na2')" "$(git -C "$F" show "$(git -C "$F" rev-parse ":/END-1"):a")"
-check "fold folds into the commit just before" fold_in ":/fix b" ":/END-2"
-eq "leaving one commit per issue" "END-2: b|END-1: a|" "$(subjects)"
-
-echo c >"$F/c" && git -C "$F" add c && git -C "$F" commit -qm "no-mistakes(review): c"
-if fold_in ":/END-2" ":/no-mistakes" >/dev/null 2>&1; then fail "fold refuses a target after the fix"; else pass "fold refuses a target after the fix"; fi
-echo dirty >>"$F/a"
-# git rebase refuses a dirty tree too, unless rebase.autoStash is set, so the
-# reason is what shows that fold's own check ran.
-if err=$(fold_in ":/no-mistakes" ":/END-1" 2>&1); then fail "fold refuses a dirty tree"; else pass "fold refuses a dirty tree"; fi
-check "and says why" grep -q "the tree has uncommitted changes" <<<"$err"
-git -C "$F" checkout -q -- a
-git -C "$F" push -q origin HEAD:refs/heads/feature/f
-HEAD_BEFORE=$(git -C "$F" rev-parse HEAD)
-if fold_in ":/no-mistakes" ":/END-1" >/dev/null 2>&1; then fail "fold refuses pushed history"; else pass "fold refuses pushed history"; fi
-eq "and leaves the branch where it was" "$HEAD_BEFORE" "$(git -C "$F" rev-parse HEAD)"
-
 section "git guard"
 # A clone of its own, so moving HEAD between branches leaves ACME alone.
 G="$T/work/acme/guard"
@@ -717,15 +603,12 @@ eq "and fails the run for its budget" "failed budget" "$(st3 '.[0] | "\(.state) 
 in_r3 run stop failed >/dev/null
 
 section "grants"
-# A clone of its own with a gate remote, so the gate stub can run there, and a
-# contract per case. guard_why prints the reason git-guard gives, if any, and
+# A clone of its own, and a contract per case. guard_why prints the reason git-guard gives, if any, and
 # "hook failed" when the hook errors, since Claude Code then blocks the command:
 # an empty reason alone would read an erroring guard as one that lets it through.
 GR="$T/work/acme/granted"
 git clone -q "$T/remotes/acme/app" "$GR"
 git -C "$GR" switch -q -c feature/granted origin/develop
-git init -q --bare "$T/gate-granted.git"
-git -C "$GR" remote add no-mistakes "$T/gate-granted.git"
 guard_why() { # guard_why <command> [cwd] -> deny reason, nothing, or "hook failed"
   local out
   out=$(jq -n --arg c "$1" --arg d "${2:-$GR}" '{tool_input: {command: $c}, cwd: $d}' | $K hook git-guard) || {
@@ -770,11 +653,8 @@ check "granted push, a push before /verify names the missing verdict" grep -q "a
 check "and so does a draft PR" grep -q "a passing verifier" <<<"$(guard_why "gh pr create --draft --base develop --title t")"
 verifier_says $'Ran the tests.\nVERDICT: pass'
 eq "the verifier's pass is recorded against the tree" "pass $(git -C "$GR" rev-parse 'HEAD^{tree}')" "$(gst '.[0].verifier | "\(.verdict) \(.tree)"')"
-check "a push still needs the gate" grep -q "a passing gate" <<<"$(guard_why "$PUSH")"
-(cd "$GR" && PATH="$T/stub:$PATH" "$K" gate "Check it" >/dev/null 2>&1)
-eq "keel gate in a run records its verdict against the tree" "pass $(git -C "$GR" rev-parse 'HEAD^{tree}') r1" "$(gst '.[0].gate | "\(.verdict) \(.tree) \(.run_id)"')"
-eq "with both passing on this tree, the push goes through" "" "$(guard_why "$PUSH")"
-# Ways round the grants, each refused even with every grant and both verdicts.
+eq "with the verifier passing on this tree, the push goes through, with no gate" "" "$(guard_why "$PUSH")"
+# Ways round the grants, each refused even with every grant and a passing verifier.
 denied() { # denied <name> <command> [cwd]: the guard refuses it, and does not crash
   local why
   why=$(guard_why "$2" "${3:-$GR}")
@@ -815,18 +695,9 @@ check "deleting a branch is refused" grep -q "or deletes a branch" <<<"$(guard_w
 check "retargeting a PR is refused" grep -q "never retargets" <<<"$(guard_why "gh pr edit 12 --base main")"
 
 git -C "$GR" commit -q --allow-empty -m "same code, new commit"
-eq "a new commit that leaves the tree unchanged keeps both verdicts" "" "$(guard_why "$PUSH")"
+eq "a new commit that leaves the tree unchanged keeps the verdict" "" "$(guard_why "$PUSH")"
 echo change >"$GR/changed" && git -C "$GR" add changed && git -C "$GR" commit -q -m "new code"
 check "a change to the code needs the verifier again" grep -q "a passing verifier on this code" <<<"$(guard_why "$PUSH")"
-check "and the gate again" grep -q "a passing gate on this code" <<<"$(guard_why "$PUSH")"
-(cd "$GR" && NM_RUN_CODE=3 PATH="$T/stub:$PATH" "$K" gate "Check it" >/dev/null 2>&1)
-eq "a failing gate is recorded as fail" "fail" "$(gst '.[0].gate.verdict')"
-# A fold rewrites the commit the gate last saw, so keel gate takes its
-# stale-copy path, which records the verdict too, on the folded tree.
-git -C "$GR" push -q no-mistakes HEAD:refs/heads/feature/granted
-git -C "$GR" reset -q --soft HEAD~1 && git -C "$GR" commit -q -m "new code, folded"
-(cd "$GR" && PATH="$T/stub:$PATH" "$K" gate "Check it" >/dev/null 2>&1)
-eq "a gate after a fold records its pass on the folded tree" "pass $(git -C "$GR" rev-parse 'HEAD^{tree}')" "$(gst '.[0].gate | "\(.verdict) \(.tree)"')"
 verifier_says "Looked at it, seems fine."
 eq "a verifier that ends without a VERDICT line records fail" "fail" "$(gst '.[0].verifier.verdict')"
 check "with the reason" grep -q "without a VERDICT line" <<<"$(gst '.[0].verifier.findings')"
@@ -1001,15 +872,32 @@ out=$(ci)
 refute "a playbook change with no result fails" ci
 eq "naming only the playbook it reaches" "bug-fix" "$(grep '^FAIL' <<<"$out" | awk '{print $2}' | tr -d ':')"
 mkdir -p "$CI/learning/evals/results"
-printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\n' "0000" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\nruns: 1 per side\n' "0000" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
 git -C "$CI" add -A && git -C "$CI" commit -qm "stale result"
 refute "a result for other method content fails" ci
-printf '# r\n\nmethod-trust: %s\nplaybook: pause\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+printf '# r\n\nmethod-trust: %s\nplaybook: pause\nruns: 1 per side\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
 git -C "$CI" commit -qam "result for another playbook"
 refute "a result for another playbook does not count, whatever its file is named" ci
 printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" commit -qam "bare result"
+refute "a file that is neither an eval's result nor an exemption with a reason does not count" ci
+echo "exempt: " >>"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" commit -qam "empty exemption"
+refute "an exemption with no reason does not count" ci
+echo "exempt: the step's wording changed, not what it asks" >>"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" commit -qam "exemption"
+check "an exemption naming this content and a reason passes" ci
+printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\nruns: 1 per side\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
 git -C "$CI" commit -qam "result"
 check "a result naming this content passes" ci
+echo "A line." >>"$CI/method/skills/pickup/SKILL.md"
+git -C "$CI" commit -qam "pickup skill"
+# bug-fix is still reached by its own change above, and its result is now stale.
+eq "a skill change reaches the playbooks it names, and no others" "bug-fix issue" "$(ci | grep '^FAIL' | awk '{print $2}' | tr -d ':' | sort | paste -sd' ')"
+echo "A line." >>"$CI/trust/skills/verify/SKILL.md"
+git -C "$CI" commit -qam "verify skill"
+eq "and the playbooks that run it" "autonomous-run babysit-pr bug-fix issue" \
+  "$(ci | grep '^FAIL' | awk '{print $2}' | tr -d ':' | sort | paste -sd' ')"
 echo "A line." >>"$CI/method/router.md"
 git -C "$CI" commit -qam "router"
 eq "a change to the router reaches every playbook" "$(for d in "$EV"/*/; do [[ -f "$d/prompt.md" ]] && basename "$d"; done | sort | paste -sd' ')" \

@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Commit, gate, push and open a pull request for the current branch. Run only when the user invokes /ship.
+description: Commit, verify, push and open a pull request for the current branch. Run only when the user invokes /ship.
 disable-model-invocation: true
 argument-hint: "[commit | push | pr]"
 ---
@@ -12,8 +12,8 @@ Invoking `/ship` is the explicit ask the Git rules require, for exactly the step
 | Invocation | Steps |
 |---|---|
 | `/ship commit` | check, commit |
-| `/ship push` | check, commit, gate, push |
-| `/ship` or `/ship pr` | check, commit, gate, push, open the PR |
+| `/ship push` | check, commit, verify, push |
+| `/ship` or `/ship pr` | check, commit, verify, push, open the PR |
 
 It covers this one run.
 The next change needs its own `/ship`.
@@ -33,11 +33,11 @@ Read `~/.keel/claude/VOICE.md` before writing the commit message or the PR body.
 - One commit: a headline prefixed with the issue ID from the branch name where the project uses one, then a body of two or three sentences on why, in VOICE.md's style.
 - No co-author or agent attribution line.
 - Never amend, squash or rewrite an existing commit.
-- With nothing to commit but commits not yet on `origin`, go on to the gate.
+- With nothing to commit but commits not yet on `origin`, go on to verify.
 
-## 3. Gate
+## 3. Verify
 
-When the owning pack's rules say to gate before a push, run `keel gate "<what this branch set out to do>"`.
+When the owning pack's rules say to gate or verify before a push, run `/verify`.
 Push only once it passes; on a failure stop and report what it found.
 
 ## 4. Push
@@ -54,5 +54,5 @@ Never force-push, never push to a protected branch.
 
 ## 6. Report
 
-The commit SHA, what the gate said, and the PR URL.
+The commit SHA, what the verifier said, and the PR URL.
 Leave the issue tracker's state alone: moving an issue past In Progress is the user's call.

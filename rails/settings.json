@@ -6,8 +6,6 @@
       "Bash(th:*)",
       "EnterWorktree",
       "Bash(treehouse:*)",
-      "Bash(no-mistakes)",
-      "Bash(no-mistakes:*)",
       "Bash(gh api:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
