@@ -47,6 +47,29 @@ eq "settings wire each hook event to keel's hook for it, never harness's" \
   "$(jq -r '.hooks | to_entries[] | .key + " " + (.value[].hooks[].command | ltrimstr("\"$HOME/.local/bin/keel\" hook "))' "$HOME/.keel/claude/settings.json" | sort)"
 eq "git-guard guards Bash and blocks the command when it cannot run" "Bash block" \
   "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].onFailure)"' "$HOME/.keel/claude/settings.json")"
+# A keel session under the home directory would otherwise load harness's
+# ~/.claude/CLAUDE.md as a project file: Claude Code reads .claude/CLAUDE.md
+# in every directory above the one it starts in.
+excludes() { jq -r '.claudeMdExcludes[]' "$HOME/.keel/claude/settings.json"; }
+excluded() { # excluded <path> -> whether some pattern matches it, a * within one segment as Claude Code's globs match
+  local pattern i
+  local -a path parts
+  IFS=/ read -r -a path <<<"$1"
+  while IFS= read -r pattern; do
+    IFS=/ read -r -a parts <<<"$pattern"
+    [[ ${#parts[@]} -eq ${#path[@]} ]] || continue
+    for i in "${!parts[@]}"; do
+      # shellcheck disable=SC2053 # each part is a glob on purpose
+      [[ "${path[i]}" == ${parts[i]} ]] || continue 2
+    done
+    return 0
+  done < <(excludes)
+  return 1
+}
+check "settings leave out a Linux home's own .claude/CLAUDE.md" excluded /home/someone/.claude/CLAUDE.md
+check "and a macOS home's" excluded /Users/someone/.claude/CLAUDE.md
+refute "but never a repository's .claude/CLAUDE.md" excluded /home/someone/app/.claude/CLAUDE.md
+refute "nor its own CLAUDE.md" excluded /home/someone/app/CLAUDE.md
 rm "$HOME/.keel/claude/CLAUDE.md"
 out=$("$ROOT/install.sh" --check)
 refute "--check fails on a removed link" "$ROOT/install.sh" --check

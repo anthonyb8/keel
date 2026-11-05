@@ -93,6 +93,24 @@ reply=$(ask "$ACME" "Run pwd and git rev-parse --abbrev-ref HEAD. Reply with the
 check "the session ran in a pool tree" grep -q "$T/pools/" <<<"$reply"
 check "on the branch it was named for" grep -q "feature/from-flag" <<<"$reply"
 
+section "home rules"
+# Another setup's rules in the home directory, as harness's ~/.claude/CLAUDE.md
+# is, reach a keel session started below it unless keel leaves them out.
+# keel's patterns name /home/* and /Users/*, and this HOME is under a temporary
+# directory, so the case adds its exact path the same way and first shows the
+# session does read the file without it.
+mkdir -p "$HOME/.claude" "$HOME/proj"
+git -C "$HOME/proj" init -q
+echo 'HOME RULE: the home word is OSPREY.' >"$HOME/.claude/CLAUDE.md"
+HOME_WORD="What is the home word given in your context? Reply with only the word, or NONE if there is none."
+jq 'del(.claudeMdExcludes)' "$T/settings.json" >"$CONFIG/settings.json"
+check "without an exclusion the session reads the home directory's .claude/CLAUDE.md" \
+  grep -q OSPREY <<<"$(ask "$HOME/proj" "$HOME_WORD")"
+jq --arg home "$HOME/.claude/CLAUDE.md" '.claudeMdExcludes += [$home]' "$T/settings.json" >"$CONFIG/settings.json"
+check "with keel's exclusion it does not" grep -qx NONE <<<"$(ask "$HOME/proj" "$HOME_WORD")"
+cp "$T/settings.json" "$CONFIG/settings.json"
+rm "$HOME/.claude/CLAUDE.md"
+
 section "EnterWorktree"
 reply=$(ask "$ACME" "Call the EnterWorktree tool with name feature/from-tool. Then run pwd and git rev-parse --abbrev-ref HEAD, and reply with their two outputs, one per line." \
   --allowedTools "EnterWorktree,Bash(pwd),Bash(git rev-parse --abbrev-ref HEAD)")
