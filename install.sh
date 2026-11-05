@@ -35,7 +35,7 @@ PAIRS=(
 # Claude Code installs there never lands in the repository.
 method_pairs() {
   local s a
-  for s in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/; do
+  for s in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/ "$ROOT"/learning/skills/*/; do
     [[ -f "$s/SKILL.md" ]] || continue
     s="${s%/}"
     echo "$s|$CONFIG/skills/$(basename "$s")"

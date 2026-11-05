@@ -53,7 +53,7 @@ refute "--check fails on a removed link" "$ROOT/install.sh" --check
 check "and names it MISSING" grep -qx "MISSING: $HOME/.keel/claude/CLAUDE.md" <<<"$out"
 "$ROOT/install.sh" >/dev/null
 eq "install puts it back" "$ROOT/rules/CLAUDE.md" "$(readlink "$HOME/.keel/claude/CLAUDE.md")"
-eq "install links every skill in method/skills and trust/skills" "$(for d in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/; do basename "$d"; done | sort)" "$(ls "$HOME/.keel/claude/skills")"
+eq "install links every skill in method/, trust/ and learning/" "$(for d in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/ "$ROOT"/learning/skills/*/; do basename "$d"; done | sort)" "$(ls "$HOME/.keel/claude/skills")"
 eq "each to its directory in the repository" "$ROOT/method/skills/spec" "$(readlink "$HOME/.keel/claude/skills/spec")"
 eq "and the keel-agent subagent" "$ROOT/method/agents/keel-agent.md" "$(readlink "$HOME/.keel/claude/agents/keel-agent.md")"
 check "and method/, where the router and skills read playbooks by an absolute path" test -f "$HOME/.keel/method/playbooks/issue.md"
@@ -835,6 +835,36 @@ jq -n --arg c "$GR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"x",agent_t
 eq "only a keel-verifier's verdict is recorded" "fail" "$(gst '.[0].verifier.verdict')"
 (cd "$GR" && "$K" run stop stopped >/dev/null)
 eq "once the run ends, a push behaves as outside a run" "" "$(guard_why "$PUSH")"
+
+section "reflect"
+# Recorded synthesizer output: findings at three levels, out of order, and
+# four that are rejected for what they lack.
+cat >"$T/findings.json" <<'JSON'
+[
+  {"key": "rule-wording", "finding": "a rule line was unclear", "evidence": "s.jsonl:40", "level": "rule", "why_not_stronger": "only wording", "edit": "rules/CLAUDE.md"},
+  {"key": "push-before-tests", "finding": "pushed before the tests ran", "evidence": "s.jsonl:12", "level": "rails", "why_not_stronger": "", "edit": "rails/lib/git-guard.py"},
+  {"key": "skip-repro", "finding": "skipped the repro", "evidence": "s.jsonl:20", "level": "playbook", "why_not_stronger": "needs judgment", "edit": "method/playbooks/bug-fix.md"},
+  {"key": "no-evidence", "finding": "x", "evidence": "", "level": "rule", "why_not_stronger": "y"},
+  {"key": "no-reason", "finding": "x", "evidence": "s.jsonl:1", "level": "skill", "why_not_stronger": ""},
+  {"key": "bad-level", "finding": "x", "evidence": "s.jsonl:1", "level": "memory", "why_not_stronger": "y"},
+  {"key": "", "finding": "x", "evidence": "s.jsonl:1", "level": "rule", "why_not_stronger": "y"}
+]
+JSON
+SEEN="$HOME/.local/state/keel/learning/seen.tsv"
+out=$($K reflect triage s1 <"$T/findings.json")
+eq "a finding seen for the first time is held, not accepted" "0 3" "$(jq -r '"\(.accepted | length) \(.held | length)"' <<<"$out")"
+eq "and only those are recorded in seen.tsv, each with its session" "push-before-tests s1|rule-wording s1|skip-repro s1" \
+  "$(cut -f2,4 --output-delimiter=' ' "$SEEN" | sort | paste -sd'|')"
+eq "findings without evidence, a known level, a reason the stronger levels fail or a key are rejected" \
+  "no evidence|no key|no reason the stronger levels do not fit|unknown level memory" "$(jq -r '[.rejected[].rejected_because] | sort | join("|")' <<<"$out")"
+out=$($K reflect triage s2 <"$T/findings.json")
+eq "seen a second time, a finding is accepted" "3 0" "$(jq -r '"\(.accepted | length) \(.held | length)"' <<<"$out")"
+eq "strongest level first" "rails playbook rule" "$(jq -r '[.accepted[].level] | join(" ")' <<<"$out")"
+jq '. + [.[0] | .key = "new-class"]' "$T/findings.json" | $K reflect triage s3 >"$T/triage3.json"
+eq "a new class beside known ones is held on its own" "3 new-class" "$(jq -r '"\(.accepted | length) \([.held[].key] | join(","))"' "$T/triage3.json")"
+eq "a key that is not a slug is rejected, since seen.tsv could not match it again" "a key that is not a slug" \
+  "$(jq -n '[{key: "a\tb", finding: "x", evidence: "s.jsonl:1", level: "rails"}]' | $K reflect triage s4 | jq -r '.rejected[0].rejected_because')"
+refute "triage refuses input that is not a JSON array" bash -c "echo '{}' | '$K' reflect triage"
 
 section "playbooks"
 # The router matches only what the index lists, and copies numbered steps.

@@ -31,6 +31,7 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
   While a run is active or paused, sweep, SubagentStop and WorktreeRemove keep its tree; a run whose session died shows as `stale` and is cleared only by hand, with `keel run stop stopped --tree <path>`.
 - **Contracts.** A run started with `--contract` (template: `trust/contract.md`) is held by the Stop hook: the session cannot end its turn until the contract's `done:` command passes, it writes `giveup.md`, or its `budget:` is spent. Decisions go to the run's `decisions.tsv`, and what needs the user is counted as Attention; `/catchup` reviews the trail read-only.
 - **Grants.** Inside a contracted run, git-guard allows only what the contract's `grants:` cover (`commit`, `push`, `draft-pr`), each in one narrow form, and a push or draft PR only once a fresh `keel-verifier` (`/verify`) and `keel gate` have passed on that exact tree. Merging is never done from a run.
+- **Reflect.** `/reflect` turns a session's or run's mistakes into proposed edits, each tied to evidence and placed at the strongest level that would have prevented it (rails, check, playbook, skill, rule). A finding seen once is held in the private `~/.local/state/keel/learning/seen.tsv`; it is proposed only when seen again, and applied only on approval, in a keel worktree.
 - **Trees.** In a keel session, `EnterWorktree`, `claude --worktree` and subagents with worktree isolation lease a pool tree from treehouse, on a named branch off the pack's base.
   keel holds its trees as `keel:<branch>` and `keel:agent-<id>`, harness as `claude:...`, so neither system's sweep or stop hook ever returns the other's tree.
   A subagent's empty tree goes back to the pool when it stops; `keel sweep --apply` catches the rest, except trees listed in `~/.config/keel/keep`.
@@ -65,7 +66,7 @@ rules/       CLAUDE.md, OPINIONS.md, VOICE.md
 rails/       bin/keel, settings.json and its hooks, lib/ (git-guard.py, sockrelay.mjs), shell/keel.zsh
 method/      router.md, playbooks/, skills/ and agents/keel-agent.md, linked into ~/.keel
 trust/       the contract, its hooks and skills
-learning/    reflect and evals
+learning/    skills/reflect; later evals
 templates/   issue and project templates, for keel template
 docs/        status.md, the run schema; how each part works
 tests/       run.sh for the logic, against a throwaway HOME

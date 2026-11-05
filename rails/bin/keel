@@ -32,6 +32,8 @@
 #   keel run stop done|stopped|failed [--note <text>] [--tree <path>]
 #                             end the run and archive it
 #   keel status --json [path] every run not yet archived, or the one for path; docs/status.md
+#   keel reflect triage [session] < findings.json
+#                             /reflect's twice rule and level order: accepted, held and rejected
 #   keel stack up [args]      start this tree's stack detached through the pack's stack script,
 #                             wait until it serves, print its URL; args go to the script
 #   keel stack down           stop it
@@ -1383,6 +1385,65 @@ record_gate() { # record_gate <tree hash> <exit code>
   log_row "$dir" "gate: $verdict" "keel gate ran no-mistakes" "run ${id:-unknown}" "$verdict" "$([[ "$verdict" == pass ]] || echo yes)"
 }
 
+# Learning: `keel reflect triage` applies /reflect's twice rule and level
+# ordering to the synthesizer's findings, so the rule lives in code, not in a
+# model's reading of a skill. seen.tsv is private to the machine and never
+# committed: it holds what was seen once, not what was acted on.
+SEEN_FILE="$STATE_DIR/learning/seen.tsv"
+
+# The levels a lesson can land at, strongest first.
+LEVELS='["rails","check","playbook","skill","rule"]'
+
+# Reads findings as a JSON array on stdin, each
+#   {key, finding, level, why_not_stronger, evidence, edit}
+# and prints {accepted, held, rejected}:
+#   rejected  a finding with no evidence, an unknown level, or a level below
+#             rails with no reason the stronger levels do not fit;
+#   held      a finding whose key this machine has not seen before, which is
+#             recorded in seen.tsv;
+#   accepted  a finding seen at least once before, strongest level first.
+# A "no playbook fits" shape is a finding at level playbook like any other.
+reflect_triage() {
+  local session="${1:-}" findings seen out
+  findings=$(cat)
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$findings" || die "reflect triage reads a JSON array of findings on stdin"
+  mkdir -p "$(dirname "$SEEN_FILE")"
+  touch "$SEEN_FILE"
+  seen=$(cut -f2 "$SEEN_FILE" | jq -R . | jq -s .)
+  out=$(mktemp "$STATE_DIR/learning/.triage.XXXXXX")
+  jq --argjson levels "$LEVELS" --argjson seen "$seen" '
+    def why_rejected:
+      if (.evidence // "") == "" then "no evidence"
+      elif (.level as $l | $levels | index($l)) == null then "unknown level \(.level // "none")"
+      elif .level != "rails" and (.why_not_stronger // "") == "" then "no reason the stronger levels do not fit"
+      elif (.key // "") == "" then "no key"
+      elif (.key | test("^[a-z0-9][a-z0-9:._-]*$") | not) then "a key that is not a slug"
+      else null end;
+    map(. + {rejected_because: why_rejected}) as $all
+    | {
+        rejected: [$all[] | select(.rejected_because != null)],
+        held: [$all[] | select(.rejected_because == null and (.key as $k | $seen | index($k) == null)) | del(.rejected_because)],
+        accepted: [$all[] | select(.rejected_because == null and (.key as $k | $seen | index($k) != null)) | del(.rejected_because)]
+          | sort_by(.level as $l | $levels | index($l))
+      }' <<<"$findings" >"$out" || die "could not read the findings"
+  # Every finding not rejected is recorded as seen, so a held one is accepted
+  # the next time a reflection finds it.
+  jq -r --arg now "$(now)" --arg s "$session" '(.held + .accepted)[] | [$now, .key, (.finding // "" | gsub("[\t\n]"; " ")), $s] | @tsv' \
+    "$out" >>"$SEEN_FILE"
+  cat "$out"
+  rm -f "$out"
+}
+
+reflect() {
+  case "${1:-}" in
+  triage)
+    shift
+    reflect_triage "$@"
+    ;;
+  *) die "usage: keel reflect triage [session id] < findings.json" ;;
+  esac
+}
+
 cmd="${1:-}"
 [[ -n "$cmd" ]] || {
   usage >&2
@@ -1399,6 +1460,7 @@ provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
 run) run "$@" ;;
 status) status "$@" ;;
+reflect) reflect "$@" ;;
 gate) gate "$@" ;;
 linear) linear "$@" ;;
 template)
