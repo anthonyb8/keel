@@ -28,6 +28,7 @@ Before writing code, not after:
 
 - The repository's `CLAUDE.md`, and every standard it says to load for the layers this change touches, such as a project skill for code style, UI design or accessibility.
 - The existing feature the audit named as the pattern to copy: match its layout, naming and idiom.
+- The Writing code section of `~/.keel/claude/OPINIONS.md`: climb its rungs before writing each piece, and reuse what the repository already has.
 
 ## 3. Reproduce a bug first
 
@@ -59,8 +60,9 @@ A "planned, not built" statement this change makes true gets flipped.
 Report on the change itself, not the thinking behind it:
 
 - what was built, layer by layer, with the key files;
+- what was reused rather than written, and what was left out as unneeded;
 - anything that differs from the audit, each with the fact that forced it, at `path:line`;
 - what was not verified: a suite not run, a role not checked, a stack that was not up;
 - manual steps for release: env vars, dashboard settings, secrets.
 
-The tests come next, through `/write-tests`. Do not commit.
+The code is audited next, by `/audit-code` in a fresh context, then the tests come through `/write-tests`. Do not commit.

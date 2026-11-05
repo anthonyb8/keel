@@ -8,8 +8,9 @@ Fix a bug at its root, proven by a reproduction that fails before the fix and pa
 2. Narrow the cause by ruling hypotheses out with runtime evidence, never by guessing.
 3. Fix it at the root, where the system first went wrong; a guard counts as a fix only when the state it handles is legitimate.
 4. Run the original repro again on the same surface and see it pass; inconclusive is not a pass.
-5. Make the repro the committed regression test, through `/write-tests` and `/e2e`.
-6. Stop ready for `/ship`: with an issue ID, the issue playbook's state handling applies; without one, offer `/spec` **(stop)**.
+5. Audit the fix with `/audit-code` in a fresh `keel-agent` that did not write it.
+6. Make the repro the committed regression test, through `/write-tests` and `/e2e`.
+7. Stop ready for `/ship`: with an issue ID, the issue playbook's state handling applies; without one, offer `/spec` **(stop)**.
 
 Under a contract that grants them, go on instead of stopping before `/ship`: `/verify` until it passes, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does.
 

@@ -11,15 +11,16 @@ When the conversation already holds a step's output for this issue, start after 
 3. Open its tree with `EnterWorktree name=<branchName>`, unless the session is already in a tree on that branch, and name the session `ABC-123 short slug`.
 4. Audit it with `/audit-issue` and stop for the answers to its open decisions **(stop)**.
 5. Build it with `/implement`.
-6. Write its tests with `/write-tests`.
-7. Audit the tests with `/audit-tests` in a fresh `keel-agent` that did not write them.
-8. Write its journey test with `/e2e`.
-9. Move it to In Progress once, after the first real run and only from Backlog or Todo: `keel linear update <ID> --state "In Progress"`.
-10. Stop before shipping, with everything uncommitted; shipping is `/ship`, on the user's ask **(stop)**.
+6. Audit the code with `/audit-code` in a fresh `keel-agent` that did not write it.
+7. Write its tests with `/write-tests`.
+8. Audit the tests with `/audit-tests` in a fresh `keel-agent` that did not write them.
+9. Write its journey test with `/e2e`.
+10. Move it to In Progress once, after the first real run and only from Backlog or Todo: `keel linear update <ID> --state "In Progress"`.
+11. Stop before shipping, with everything uncommitted; shipping is `/ship`, on the user's ask **(stop)**.
 
 Under a contract that grants them, go on instead of stopping before `/ship`: `/verify` until it passes, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does.
 
 ## Reply
 
-What was built, the tests added and what the audit kept, rewrote or deleted, the journey tests with their screenshots, what was not verified, and the app's URL and sign-in when the stack is up.
+What was built, what the code audit cut, the tests added and what the test audit kept, rewrote or deleted, the journey tests with their screenshots, what was not verified, and the app's URL and sign-in when the stack is up.
 Past In Progress the issue's status follows the PR: never move it forward on a verifier's pass or a finished task alone, and never backwards unasked.
