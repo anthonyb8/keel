@@ -32,6 +32,10 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
 - **Stacks.** `keel stack up` starts the tree's stack through the pack's `stack` script and prints its URL once it serves; `keel stack down` stops it.
   `keel e2e` runs browser tests against it from a container on no network but the stack's ports.
   keel's stack state lives in the tree's git dir as `keel-stack`, apart from harness's.
+- **Gate.** `keel gate "<intent>"` runs no-mistakes on the branch against the pack's base, skipping rebase, push, PR and CI unless `KEEL_GATE_SKIP` says otherwise, so nothing reaches origin.
+  `keel fold <fix> <target>` folds a gate fix commit into the commit it fixes, for unpushed history only, and only when the final tree comes out unchanged.
+- **git-guard.** A `PreToolUse` hook refuses any merge, rebase, cherry-pick or revert that would move a protected branch: the pack's base, the default branch and the pack's `protected` list, as `keel protected` prints them.
+  What it cannot place, such as a git call inside `bash -c`, it refuses rather than guesses.
 
 ## The four layers
 
@@ -48,7 +52,7 @@ Each directory is created by the row that first puts something in it.
 
 ```
 rules/       CLAUDE.md, OPINIONS.md, VOICE.md
-rails/       bin/keel, settings.json and its hooks, lib/sockrelay.mjs, shell/keel.zsh; later git-guard
+rails/       bin/keel, settings.json and its hooks, lib/ (git-guard.py, sockrelay.mjs), shell/keel.zsh
 method/      the mode, playbooks, skills and agents
 trust/       the contract, its hooks and skills
 learning/    reflect and evals

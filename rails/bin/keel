@@ -9,6 +9,9 @@
 #   keel provision [dir]      prepare a fresh worktree: the pack's provision script, else the default
 #   keel sweep [--apply]      return idle keel-leased trees in this repo's pool that hold no work,
 #                             and release the stacks of trees already returned
+#   keel gate "<intent>"      run the no-mistakes gate on this branch; --dry-run prints the command
+#   keel fold <fix> <target>  fold a gate fix commit into the commit it fixes, for unpushed
+#                             history only; refused or undone unless the final tree is unchanged
 #   keel stack up [args]      start this tree's stack detached through the pack's stack script,
 #                             wait until it serves, print its URL; args go to the script
 #   keel stack down           stop it
@@ -22,6 +25,7 @@
 #                               worktree-create  WorktreeCreate
 #                               worktree-remove  WorktreeRemove
 #                               subagent-stop    SubagentStop
+#                               git-guard        PreToolUse on Bash
 #   keel help                 print this help
 #
 # A pack is a directory registered under $KEEL_PACKS (default
@@ -39,6 +43,7 @@ set -euo pipefail
 
 PACKS_DIR="${KEEL_PACKS:-$HOME/.config/harness/packs}"
 LIB_DIR="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")/lib"
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 KEEP_FILE="${KEEL_KEEP:-$HOME/.config/keel/keep}"
 
 die() {
@@ -426,6 +431,177 @@ hook_worktree_remove() {
   treehouse return "$path" >&2
 }
 
+# Refuses a merge, rebase, cherry-pick or revert that would move a protected
+# branch; lib/git-guard.py says how. Most commands name none of those verbs, so
+# they skip Python altogether.
+hook_git_guard() {
+  local input
+  input=$(cat)
+  grep -Eq 'merge|rebase|cherry-pick|revert' <<<"$(jq -r '.tool_input.command // empty' <<<"$input")" || return 0
+  python3 -I "$LIB_DIR/git-guard.py" "$SELF" <<<"$input"
+}
+
+# Runs the no-mistakes gate on the current branch, initialising the repository
+# on first use. init writes the no-mistakes remote into the shared .git/config,
+# so one init covers every worktree. The PR base comes from the pack, because
+# no-mistakes otherwise targets the forge's default branch. Push, PR and CI are
+# skipped by default: code leaves the machine only when a push is asked for.
+# Rebase is skipped too: the PR itself reports a conflict with its base, and
+# rebasing a branch cut from another base, such as a fix straight into staging,
+# onto the pack's base would drag that base's unreleased work into it.
+gate() {
+  local intent="${1:-}" dry=0 base
+  [[ -n "$intent" ]] || die 'usage: keel gate "<what you set out to do>" [--dry-run]'
+  [[ "${2:-}" == --dry-run ]] && dry=1
+
+  local args=(axi run --intent "$intent" --skip "${KEEL_GATE_SKIP:-rebase,push,pr,ci}")
+  base=$(base_for "$PWD")
+  [[ -n "$base" ]] && args+=(--base-branch "$base")
+
+  local stale=()
+  read -r -a stale <<<"$(stale_gate_copy)" || true
+  if [[ "$dry" == 1 ]]; then
+    git remote get-url no-mistakes >/dev/null 2>&1 || echo "no-mistakes init"
+    [[ ${#stale[@]} -eq 3 ]] && echo "clear the gate's copy of ${stale[1]} at ${stale[2]}"
+    printf 'no-mistakes'
+    printf ' %q' "${args[@]}"
+    echo
+    return
+  fi
+  if ! git remote get-url no-mistakes >/dev/null 2>&1; then
+    no-mistakes init >&2
+  fi
+  if [[ ${#stale[@]} -ne 3 ]]; then
+    no-mistakes "${args[@]}"
+    return
+  fi
+
+  local gate_dir=${stale[0]} branch=${stale[1]} copy=${stale[2]} code=0
+  local tag="refs/tags/no-mistakes-abandoned/$branch/$copy" none=${copy//?/0}
+  git --git-dir="$gate_dir" rev-parse -q --verify "$tag" >/dev/null ||
+    git --git-dir="$gate_dir" update-ref --no-deref "$tag" "$copy" "$none"
+  git --git-dir="$gate_dir" update-ref --no-deref -d "refs/heads/$branch" "$copy"
+  echo "gate: this branch rewrote the gate's copy at ${copy:0:8}; archived it as $tag" >&2
+  no-mistakes "${args[@]}" || code=$?
+  # A run that never started leaves the gate's copy as no-mistakes last saw it.
+  if [[ "$code" != 0 ]] && ! git --git-dir="$gate_dir" rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
+    git --git-dir="$gate_dir" update-ref --no-deref "refs/heads/$branch" "$copy" "$none"
+  fi
+  return "$code"
+}
+
+# Folds one gate fix commit into the commit it fixes: a fixup rebase that moves
+# <commit> to just after <target>, run with keel itself as the sequence
+# editor so it needs no program named on the command line. Only for history no
+# remote holds, from a clean tree, and only when the branch's final tree comes
+# out unchanged; anything else is refused or undone.
+fold() {
+  local commit target head
+  [[ $# -eq 2 ]] || die "usage: keel fold <gate-fix-commit> <target-commit>"
+  commit=$(resolve_commit "$1") || die "not a commit: $1"
+  target=$(resolve_commit "$2") || die "not a commit: $2"
+  git symbolic-ref -q HEAD >/dev/null || die "not on a branch"
+  [[ "$commit" != "$target" ]] || die "a commit cannot fold into itself"
+  git merge-base --is-ancestor "$target" "$commit" || die "$2 is not an ancestor of $1"
+  git merge-base --is-ancestor "$commit" HEAD || die "$1 is not on this branch"
+  git rev-parse -q --verify "$target^" >/dev/null || die "cannot fold into a root commit"
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "the tree has uncommitted changes"
+  # The gate's own remote holds a copy of every gated branch, and `keel
+  # gate` takes a folded branch back, so only the other remotes count.
+  # shellcheck disable=SC2143 # grep -q would end the pipe early under pipefail
+  [[ -z "$(git branch -r --contains "$target" --format='%(refname)' | grep -v '^refs/remotes/no-mistakes/')" ]] ||
+    die "$2 is already on a remote; a fold would rewrite pushed history"
+
+  head=$(git rev-parse HEAD)
+  if ! GIT_SEQUENCE_EDITOR="$(readlink -f "$0") __fold-todo $commit $target" \
+    git rebase -q -i "$target^" >&2; then
+    git rebase --abort >/dev/null 2>&1 || true
+    die "the fold did not apply cleanly; the branch is back at ${head:0:8}"
+  fi
+  if ! git diff --quiet "$head" HEAD; then
+    git reset -q --hard "$head"
+    die "the fold changed the branch's final tree; the branch is back at ${head:0:8}"
+  fi
+  echo "folded ${commit:0:8} into ${target:0:8}; tree unchanged, head ${head:0:8} -> $(git rev-parse --short=8 HEAD)"
+}
+
+# Prints the full sha of a commit name. Resolved before `^{commit}` is applied,
+# since a `:/message` search would otherwise read the suffix as part of it.
+resolve_commit() {
+  local sha
+  sha=$(git rev-parse -q --verify "$1") || return 1
+  git rev-parse -q --verify "$sha^{commit}"
+}
+
+# The sequence editor fold runs: in the rebase todo at $3, drops <commit>'s
+# pick and puts it back as a fixup straight after <target>'s.
+fold_todo() {
+  local commit="$1" target="$2" todo="$3" out line sha full
+  out=$(mktemp)
+  while IFS= read -r line; do
+    sha=$(awk '$1 == "pick" || $1 == "p" { print $2 }' <<<"$line")
+    full=""
+    if [[ -n "$sha" ]]; then
+      full=$(git rev-parse -q --verify "$sha^{commit}" || true)
+    fi
+    if [[ "$full" == "$commit" ]]; then
+      continue
+    fi
+    echo "$line" >>"$out"
+    if [[ "$full" == "$target" ]]; then
+      echo "fixup $commit" >>"$out"
+    fi
+  done <"$todo"
+  mv "$out" "$todo"
+}
+
+# Prints "<gate dir> <branch> <sha>" when the gate's private copy of the current
+# branch is a head this branch has since rewritten, by a fold or a rebase, and so
+# has to be cleared before the gate takes the branch again. no-mistakes refuses
+# to replace such a copy itself: it proves survival by per-commit patch identity,
+# which every fold changes, so a deliberate rewrite reads as lost work. The proof
+# that holds here is that the branch's own reflog held the copy, so none of its
+# commits live only in the gate. A run still in flight, or gate fixes not yet
+# brought back by `no-mistakes axi sync --recover`, keep the copy, because those
+# are the cases no-mistakes guards and reports itself.
+stale_gate_copy() {
+  local branch gate_dir copy head status entry held=0
+  branch=$(git symbolic-ref -q --short HEAD) || return 0
+  gate_dir=$(git remote get-url no-mistakes 2>/dev/null) || return 0
+  [[ -d "$gate_dir" ]] || return 0
+  git --git-dir="$gate_dir" symbolic-ref -q "refs/heads/$branch" >/dev/null && return 0
+  copy=$(git --git-dir="$gate_dir" rev-parse -q --verify "refs/heads/$branch^{commit}") || return 0
+  head=$(git rev-parse HEAD)
+  [[ "$copy" != "$head" ]] || return 0
+  git merge-base --is-ancestor "$copy" "$head" 2>/dev/null && return 0
+
+  while read -r entry; do
+    if git merge-base --is-ancestor "$copy" "$entry" 2>/dev/null; then
+      held=1
+      break
+    fi
+  done < <(git log -g --format=%H "refs/heads/$branch" -- 2>/dev/null || true)
+  [[ "$held" == 1 ]] || return 0
+
+  status=$(no-mistakes axi status 2>/dev/null) || return 0
+  case "$(toon_field run status <<<"$status")" in
+  pending | running) return 0 ;;
+  esac
+  case "$(toon_field branch_sync state <<<"$status")" in
+  pipeline_owned | push_in_progress) return 0 ;;
+  esac
+  echo "$gate_dir $branch $copy"
+}
+
+# Prints one field of a top-level block in no-mistakes' TOON output on stdin.
+toon_field() {
+  awk -v block="$1:" -v field="  $2:" '
+    $0 == block { inside = 1; next }
+    /^[^ ]/ { inside = 0 }
+    inside && index($0, field) == 1 { sub(field " *", ""); gsub(/"/, ""); print; exit }
+  '
+}
+
 cmd="${1:-}"
 [[ -n "$cmd" ]] || {
   usage >&2
@@ -440,6 +616,9 @@ base) base_for "${1:-$PWD}" ;;
 protected) protected_for "${1:-$PWD}" ;;
 provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
+gate) gate "$@" ;;
+fold) fold "$@" ;;
+__fold-todo) fold_todo "$@" ;;
 e2e) e2e "$@" ;;
 stack)
   case "${1:-}" in
@@ -456,6 +635,7 @@ hook)
   worktree-create) hook_worktree_create ;;
   worktree-remove) hook_worktree_remove ;;
   subagent-stop) hook_subagent_stop ;;
+  git-guard) hook_git_guard ;;
   *) die "unknown hook: ${1:-}" ;;
   esac
   ;;

@@ -321,6 +321,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook git-guard",
+            "onFailure": "block"
+          }
+        ]
+      }
     ]
   }
 }
