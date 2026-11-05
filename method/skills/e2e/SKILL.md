@@ -9,7 +9,7 @@ argument-hint: "[ABC-123]"
 
 A journey is what a user does from start to finish to get the outcome the issue promises: sign in as a role, act, see the result.
 This skill leaves one committed test per journey the change creates or alters, so the next change that breaks it fails before it ships.
-The gate still drives the change live before a push; this is the part that stays.
+The verifier still drives the change live before a push; this is the part that stays.
 
 ## 1. Learn how this repository runs browser tests
 
@@ -24,7 +24,7 @@ A UI-free change, such as a pure backend or tooling change, has no journey: say 
 
 ## 3. Write each one
 
-- Named by the repository's convention, so the gate selects it when the surface changes.
+- Named by the repository's convention, so the verifier and CI select it when the surface changes.
 - A header comment states the invariant the user relies on and the issue ID.
 - Sign in through the repository's seeded-login helper, never by hand-rolled requests.
 - Find elements the way a user does: by role, label and visible text; a test id only where nothing visible identifies the element.

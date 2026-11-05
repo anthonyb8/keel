@@ -3,7 +3,7 @@
 Refuses a merge, rebase, cherry-pick or revert that would move a protected
 branch, the list `keel protected` prints for the repository it runs in. In a
 tree with an active contracted run it also holds commits, pushes and PRs to
-the contract's grants, and a push or PR to a passing verifier and gate.
+the contract's grants, and a push or PR to a passing verifier.
 Permission rules match command text and cannot see which branch is checked
 out, so the check has to run here. Anything it cannot place, such as a git
 call inside `bash -c` or a `cd` into `$VAR`, is refused rather than guessed:
@@ -160,8 +160,8 @@ def deny(reason):
 
 # Grants. In a tree with an active contracted run, the run's contract says
 # what may leave the machine: `commit`, `push` and `draft-pr`, each in one
-# narrow form, and a push or PR only once a passing verifier and gate are
-# recorded against the tree being sent. Outside a run nothing here applies.
+# narrow form, and a push or PR only once a passing verifier is recorded
+# against the tree being sent. Outside a run nothing here applies.
 #
 # Inside a run the guard parses strictly and refuses what it cannot place: a
 # git call aimed elsewhere by GIT_DIR or --git-dir, a gh alias or extension,
@@ -242,16 +242,14 @@ def default_branch(directory):
 
 
 def missing_verdicts(run, directory):
-    """Why a push or PR from this tree lacks its verdicts, or None."""
+    """Why a push or PR from this tree lacks its verifier's pass, or None."""
     tree = head_tree(directory)
-    missing = []
-    for name, how in (("verifier", "/verify"), ("gate", "keel gate")):
-        v = run["status"].get(name) or {}
-        if v.get("verdict") != "pass":
-            missing.append(f"a passing {name} ({how})")
-        elif v.get("tree") != tree:
-            missing.append(f"a passing {name} on this code: the last one passed tree {v.get('tree', '?')[:12]}, HEAD is now {tree[:12]} ({how} again)")
-    return "; ".join(missing) or None
+    v = run["status"].get("verifier") or {}
+    if v.get("verdict") != "pass":
+        return "a passing verifier (/verify)"
+    if v.get("tree") != tree:
+        return f"a passing verifier on this code: the last one passed tree {v.get('tree', '?')[:12]}, HEAD is now {tree[:12]} (/verify again)"
+    return None
 
 
 def run_refusal(keel, run, command, why):

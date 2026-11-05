@@ -33,7 +33,7 @@ A change that would break a reader bumps `version`.
 | `done_check` | object or null | the last done check the Stop hook ran: `{exit, passed, head, at, tail}`, with `tail` the output's last 40 lines |
 | `contract_hash` | string or null | the sha256 of the run's `contract.md` when it started; null for a run with no contract |
 | `verifier` | object or null | the last `keel-verifier`'s verdict, recorded by the SubagentStop hook: `{verdict, tree, at, findings}`, with `tree` the `HEAD^{tree}` it judged |
-| `gate` | object or null | the last `keel gate` verdict in the run: `{verdict, tree, at, run_id}` |
+| `gate` | null | no longer written, since keel has no gate; kept so readers of version 1 see the field they expect |
 
 An archived run also has `ended_at` and `note`.
 
@@ -64,6 +64,6 @@ In a tree with an active contracted run, git-guard holds commits, pushes and PRs
 `commit` allows `git commit` on the run's branch (never `--amend`), and `git commit-tree` and `git update-ref refs/heads/<run branch>`.
 `push` allows only `git push -u origin HEAD:<run branch>`, never forced, never a protected branch.
 `draft-pr` allows only `gh pr create --draft --base <the base>`.
-A push or PR also needs a passing `verifier` and `gate` recorded against the `HEAD^{tree}` being sent, so a fold that leaves the tree unchanged keeps both, and any code change needs both again.
+A push or PR also needs a passing `verifier` recorded against the `HEAD^{tree}` being sent, so a commit that leaves the tree unchanged keeps it, and any code change needs it again.
 `gh pr merge`, `ready`, `close` and `reopen`, retargeting a PR, and deleting a branch or tag are refused in a run whatever the grants.
 Each refusal is logged to `decisions.tsv`, flagged for attention.
