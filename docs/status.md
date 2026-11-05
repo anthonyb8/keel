@@ -46,7 +46,8 @@ An archived run also has `ended_at` and `note`.
 
 ## Verdicts outside a run
 
-The SubagentStop hook records every `keel-verifier`'s verdict for its tree, run or no run, in `~/.local/state/keel/verdicts/<tree-key>.json`: `{verdict, tree, path, at, findings}`, with `tree` the `HEAD^{tree}` it judged and `path` the tree's absolute path.
+Every `keel-verifier`'s verdict is recorded for its tree, run or no run, in `~/.local/state/keel/verdicts/<tree-key>.json`: `{verdict, tree, path, at, findings, handback}`, with `tree` the `HEAD^{tree}` it judged and `path` the tree's absolute path.
+A verifier that hands its report back through a SubagentHandback call has it recorded by the PostToolUse hook on that call, with `handback` the verifier's agent id; any other verifier has it recorded from its last message by the SubagentStop hook, with `handback` empty.
 `keel verdict` in a tree prints the last one and passes only when it is a pass on the code at HEAD; `keel verdict --json` prints the record.
 `/ship` reads it before a push, so the session that did the work never reports its own pass.
 

@@ -55,6 +55,25 @@ Small because necessary, not golfed.
 A clear five lines beat a clever one.
 An abstraction with one caller is not one yet.
 
+## Scripts and agents
+
+Make deterministic what can be deterministic, and spend the agent on what cannot.
+Every command a skill makes the agent run is a model turn: seconds of latency and a raw output that stays in context.
+A script that does the same reads in one call is faster, cheaper and the same every time.
+
+So a skill's mechanical part is a script, and its prose covers only judgment.
+The script runs the clear path to the end and exits 0.
+When it meets anything it was not written to decide, such as sources that disagree or a state it does not recognise, it exits 2 with a JSON reason and its evidence, and the agent takes over from there.
+It exits 1 only when it broke.
+
+A script never guesses.
+Anything it does not fully understand is exit 2, never a best effort, so every case that needs thought reaches the agent.
+
+Ask of each step: could two careful people disagree on the outcome?
+If not, it belongs in the script.
+Reading state, checking it against a written rule and running the agreed command are script work.
+Weighing evidence, writing prose and asking the user are agent work.
+
 ## Rules vs existing code
 
 Rules are decisions, not observations.
