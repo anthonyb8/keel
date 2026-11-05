@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: treehouse
+        run: go install github.com/kunchenguid/treehouse/v3@v3.1.2 && echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
       - name: shellcheck
         run: git ls-files -z '*.sh' rails/bin | xargs -0 shellcheck -x
       - name: tests

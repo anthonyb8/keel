@@ -21,7 +21,10 @@ A pack's rules, injected at session start, add to them and win where the two dis
 ## Running things
 
 - Stop every long-running process you started before you finish, by its PID, never a broad `pkill`, and confirm its port is free.
-  Leave up only what I asked for, and shared local databases such as `supabase start`.
+  Leave up only what I asked for, shared local databases such as `supabase start`, and the tree's stack.
+- When a task needs the app running, bring it up with `keel stack up` from the worktree, never piece by piece.
+  Leave it up, and end the report with its URL and how to sign in.
+  `keel stack down`, or returning the tree, stops it.
 
 ## Git
 

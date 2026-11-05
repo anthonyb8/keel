@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Exercises keel end to end under a temporary HOME seeded with a fake harness
-# install, so nothing on the machine is touched. Needs bash, git and jq; no
-# Claude calls: a stub stands in for claude.
+# Exercises keel end to end against throwaway repositories, a throwaway
+# treehouse pool and a throwaway pack, under a temporary HOME seeded with a
+# fake harness install, so nothing on the machine is touched. Needs bash, git,
+# jq, curl, python3 and treehouse; no Claude calls: a stub stands in for claude.
 #
 #   tests/run.sh
+# shellcheck disable=SC2016,SC2088 # expected text holds a literal $, ~ and backticks
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,6 +40,11 @@ eq "install writes only under ~/.keel/claude and ~/.local/bin/keel" "" \
 eq "running install again changes nothing" "" "$("$ROOT/install.sh")"
 check "--check is clean after install" "$ROOT/install.sh" --check
 check "settings.json is valid JSON, or Claude Code would drop every permission" jq empty "$HOME/.keel/claude/settings.json"
+# A hook left out never fires, and one that runs harness acts on harness's
+# trees: each event must reach the keel hook that handles it, and only that.
+eq "settings wire each hook event to keel's hook for it, never harness's" \
+  "$(printf '%s\n' 'SessionStart context' 'SubagentStart context' 'SubagentStop subagent-stop' 'WorktreeCreate worktree-create' 'WorktreeRemove worktree-remove')" \
+  "$(jq -r '.hooks | to_entries[] | .key + " " + (.value[].hooks[].command | ltrimstr("\"$HOME/.local/bin/keel\" hook "))' "$HOME/.keel/claude/settings.json" | sort)"
 rm "$HOME/.keel/claude/CLAUDE.md"
 out=$("$ROOT/install.sh" --check)
 refute "--check fails on a removed link" "$ROOT/install.sh" --check
@@ -56,6 +63,183 @@ eq "and passes its arguments through untouched" "$(printf 'arg=--resume\narg=two
 check "keel help succeeds" "$K" help
 check "and documents keel claude" grep -q "keel claude \[args\]" <<<"$("$K" help)"
 refute "an unknown verb fails" "$K" nope
+
+section "pack and base"
+make_fixture
+eq "a repo a pack in harness's packs dir matches resolves to it" "$PACK" "$(readlink -f "$($K pack "$ACME")")"
+eq "a repo no pack matches resolves to nothing" "" "$($K pack "$OTHER")"
+eq "a directory outside git resolves to nothing" "" "$($K pack "$T")"
+eq "KEEL_PACKS points keel at another packs dir" "" "$(KEEL_PACKS="$T/nopacks" $K pack "$ACME")"
+eq "base comes from the pack" "develop" "$($K base "$ACME")"
+eq "no pack, no base" "" "$($K base "$OTHER")"
+eq "a pack repo without the pack's base falls back to its default" "" "$($K base "$SITE")"
+echo release >"$PACK/protected"
+eq "the base, the default branch and the pack's list are protected" "$(printf 'develop\nmain\nrelease')" "$($K protected "$ACME")"
+eq "a repo without the pack's list protects its default" "main" "$($K protected "$OTHER")"
+rm "$PACK/protected"
+
+section "context hook"
+out=$(jq -n --arg c "$ACME" '{hook_event_name:"SessionStart",source:"startup",cwd:$c}' | $K hook context)
+ctx=$(jq -r .hookSpecificOutput.additionalContext <<<"$out")
+check "SessionStart in an owned repo injects the rules" grep -q "ACME RULE" <<<"$ctx"
+check "and tells the session to run keel where the rules name harness" grep -qF 'where these rules name `harness <verb>`, run `keel <verb>`' <<<"$ctx"
+check "and points at keel's CLAUDE.md, not harness's" grep -qF "~/.keel/claude/CLAUDE.md" <<<"$ctx"
+eq "SessionStart output names its event" "SessionStart" "$(jq -r .hookSpecificOutput.hookEventName <<<"$out")"
+out=$(jq -n --arg c "$ACME" '{hook_event_name:"SubagentStart",cwd:$c}' | $K hook context)
+eq "SubagentStart output names its event" "SubagentStart" "$(jq -r .hookSpecificOutput.hookEventName <<<"$out")"
+out=$(jq -n --arg c "$OTHER" '{hook_event_name:"SessionStart",source:"startup",cwd:$c}' | $K hook context)
+eq "an unowned repo gets no output" "" "$out"
+
+create() { # create <repo> <name>
+  jq -n --arg c "$1" --arg n "$2" '{hook_event_name:"WorktreeCreate",cwd:$c,name:$n}' | $K hook worktree-create 2>/dev/null
+}
+stop() { # stop <tree> <agent id>
+  jq -n --arg c "$1" --arg a "$2" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:$a}' | $K hook subagent-stop 2>/dev/null
+}
+holder() { # holder <repo> <path>
+  (cd "$1" && treehouse status --json) | jq -r --arg p "$2" '.[] | select(.path == $p) | .lease_holder'
+}
+# A tree leased the way a harness session leases one.
+harness_lease() { # harness_lease <repo> <name>
+  (cd "$1" && treehouse get --lease --lease-holder "claude:$2" --branch "$2" 2>/dev/null)
+}
+
+section "worktree create"
+P=$(create "$ACME" feature/acme-1-thing)
+check "a new name leases a pool tree" test -d "$P"
+eq "the tree is on a branch of that name" "feature/acme-1-thing" "$(git -C "$P" rev-parse --abbrev-ref HEAD)"
+eq "the tree is cut from the pack's base" "$DEVELOP" "$(git -C "$P" rev-parse HEAD)"
+eq "the lease is held by keel, not claude" "keel:feature/acme-1-thing" "$(holder "$ACME" "$P")"
+P2=$(create "$ACME" feature/acme-1-thing)
+eq "the same name again resumes the same tree" "$P" "$P2"
+eq "resuming leases nothing new" "1" "$( (cd "$ACME" && treehouse status --json) | jq '[.[] | select(.status == "leased")] | length')"
+
+Q=$(create "$OTHER" feature/plain)
+eq "with no pack the tree is cut from the default branch" "$MAIN" "$(git -C "$Q" rev-parse HEAD)"
+S=$(create "$SITE" feature/site-1)
+eq "a pack repo without the pack's base leases off its default" "$(git -C "$SITE" rev-parse origin/main)" "$(git -C "$S" rev-parse HEAD)"
+
+refute "a directory outside git is refused" create "$T" anything
+eq "a refused create prints no path" "" "$(create "$T" anything)"
+
+section "default provision"
+# Stand-ins for npm, which counts its installs, and node, whose version the
+# stamp records.
+mkdir -p "$T/npm-tree"
+printf '#!/bin/sh\nmkdir -p node_modules && echo ci >>"%s/npm-calls"\n' "$T" >"$T/stubs/npm"
+printf '#!/bin/sh\necho "${NODE_VERSION:-v1}"\n' >"$T/stubs/node"
+chmod +x "$T/stubs/npm" "$T/stubs/node"
+echo '{"v":1}' >"$T/npm-tree/package-lock.json"
+installs() { $K provision "$T/npm-tree" && wc -l <"$T/npm-calls" | tr -d ' '; }
+eq "a tree without node_modules gets npm ci" "1" "$(installs)"
+eq "a tree already installed from the same lockfile skips it" "1" "$(installs)"
+check "under harness's stamp, so neither system reinstalls the other's tree" test -f "$T/npm-tree/node_modules/.harness-provisioned"
+echo '{"v":2}' >"$T/npm-tree/package-lock.json"
+eq "a changed lockfile installs again" "2" "$(installs)"
+eq "a changed Node installs again" "3" "$(NODE_VERSION=v2 installs)"
+printf '#!/bin/sh\necho pack >.provisioned\n' >"$PACK/provision"
+chmod +x "$PACK/provision"
+$K provision "$ACME"
+eq "a pack's provision script runs in the tree" "pack" "$(cat "$ACME/.provisioned" 2>/dev/null)"
+rm "$PACK/provision" "$ACME/.provisioned"
+rm "$T/stubs/npm" "$T/stubs/node"
+
+section "worktree remove and re-create"
+jq -n --arg p "$P" '{hook_event_name:"WorktreeRemove",worktree_path:$p}' | $K hook worktree-remove >/dev/null 2>&1
+eq "remove returns the tree to the pool" "available" "$(lease_status "$ACME" "$P")"
+check "and releases its stack" grep -qxF "$P" "$T/released"
+check "the branch survives the return" git -C "$ACME" rev-parse --verify --quiet refs/heads/feature/acme-1-thing
+P3=$(create "$ACME" feature/acme-1-thing)
+eq "an existing branch with no tree gets a tree on that branch" "feature/acme-1-thing" "$(git -C "$P3" rev-parse --abbrev-ref HEAD)"
+eq "and that lease is held" "leased" "$(lease_status "$ACME" "$P3")"
+
+section "subagent stop"
+A=$(create "$ACME" agent-aaa111)
+eq "a subagent's tree is held as keel:agent-<id>" "keel:agent-aaa111" "$(holder "$ACME" "$A")"
+stop "$A" bbb222
+eq "a stop from another agent leaves the tree alone" "leased" "$(lease_status "$ACME" "$A")"
+echo wip >"$A/wip.txt"
+: >"$T/released"
+stop "$A" aaa111
+eq "a tree with uncommitted work is kept" "leased" "$(lease_status "$ACME" "$A")"
+# treehouse itself refuses to return a dirty tree, so the lease alone cannot
+# show keel's own check ran: a released stack would mean keel tore it down.
+check "and its stack is left running" test ! -s "$T/released"
+git -C "$A" add wip.txt && git -C "$A" commit -q -m wip
+stop "$A" aaa111
+eq "a tree with a commit missing from the remote is kept" "leased" "$(lease_status "$ACME" "$A")"
+B=$(create "$ACME" agent-ccc333)
+stop "$B" ccc333
+eq "an empty tree is returned" "available" "$(lease_status "$ACME" "$B")"
+check "and its stack released" grep -qxF "$B" "$T/released"
+check "and its agent branch is deleted" test -z "$(git -C "$ACME" for-each-ref refs/heads/agent-ccc333)"
+HA=$(harness_lease "$ACME" agent-eee555)
+stop "$HA" eee555
+eq "a stop never returns a tree a harness subagent holds" "leased" "$(lease_status "$ACME" "$HA")"
+: >"$T/released"
+stop "$ACME" aaa111
+check "a stop in the main checkout is a no-op" test ! -s "$T/released"
+
+section "sweep"
+C=$(create "$ACME" agent-ddd444)
+HS=$(harness_lease "$ACME" feature/harness-idle)
+before_pool=$( (cd "$ACME" && treehouse status --json) | jq -c '[.[] | {path, status}]')
+listed=$(cd "$ACME" && $K sweep)
+check "a dry run lists the idle keel trees" grep -q "$C" <<<"$listed"
+refute "a dry run never lists a tree harness holds" grep -q "$HS" <<<"$listed"
+eq "a dry run changes nothing" "$before_pool" "$( (cd "$ACME" && treehouse status --json) | jq -c '[.[] | {path, status}]')"
+swept=$(cd "$ACME" && $K sweep --apply 2>&1 >/dev/null)
+eq "apply returns the empty tree" "available" "$(lease_status "$ACME" "$C")"
+eq "apply keeps the tree with work" "leased" "$(lease_status "$ACME" "$A")"
+check "and says why it kept it" grep -qxF "kept $A: commits not on any remote" <<<"$swept"
+eq "apply never returns an empty tree harness holds" "leased" "$(lease_status "$ACME" "$HS")"
+check "a dry run names the returned trees whose stacks it would release" grep -q "would release the stack of $C" <<<"$(cd "$ACME" && $K sweep)"
+: >"$T/released"
+(cd "$ACME" && $K sweep --apply >/dev/null 2>&1)
+check "apply releases the stacks of returned trees" grep -qxF "$C" "$T/released"
+check "apply never releases the stack of a leased tree" test -z "$(grep -xF "$A" "$T/released")"
+mkdir -p "$HOME/.config/keel"
+echo "$C" >"$HOME/.config/keel/keep"
+: >"$T/released"
+(cd "$ACME" && $K sweep --apply >/dev/null 2>&1)
+check "apply never releases the stack of a tree on keel's keep list" test -z "$(grep -xF "$C" "$T/released")"
+rm "$HOME/.config/keel/keep"
+
+section "stack"
+export STACK_PORT
+STACK_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+KT=$(create "$ACME" feature/acme-2-stack)
+out=$(cd "$KT" && $K stack up 2>/dev/null)
+eq "up prints the URL once it serves" "http://127.0.0.1:$STACK_PORT/" "$out"
+check "the stack answers after up returns" curl -s -o /dev/null "$out"
+check "status reports it running" bash -c "cd '$KT' && $K stack status"
+eq "a running stack leaves the tree clean" "" "$(git -C "$KT" status --porcelain)"
+eq "up again reuses the running stack" "$out" "$(cd "$KT" && $K stack up 2>/dev/null)"
+(cd "$KT" && $K stack down >/dev/null)
+refute "down stops the server" curl -s -o /dev/null "$out"
+refute "status fails once stopped" bash -c "cd '$KT' && $K stack status"
+if err=$(cd "$KT" && STACK_FAIL=1 KEEL_STACK_TIMEOUT=20 $K stack up 2>&1); then fail "a stack that dies makes up fail"; else pass "a stack that dies makes up fail"; fi
+check "and says it exited rather than waiting out the timeout" grep -q "exited before it served" <<<"$err"
+check "and up shows its log" grep -q "stack broke" <<<"$err"
+(cd "$KT" && $K stack up >/dev/null 2>&1)
+jq -n --arg p "$KT" '{hook_event_name:"WorktreeRemove",worktree_path:$p}' | $K hook worktree-remove >/dev/null 2>&1
+refute "removing the tree stops its stack" curl -s -o /dev/null "$out"
+refute "up refuses a repo with no stack script" bash -c "cd '$OTHER' && $K stack up"
+
+section "stack release"
+: >"$T/released"
+(cd "$KT" && $K stack release >/dev/null 2>&1)
+check "release runs the pack's release in the tree" grep -qxF "$KT" "$T/released"
+eq "a stack with no release succeeds and says nothing" "exit 0" "$(cd "$KT" && STACK_NO_RELEASE=1 $K stack release 2>&1; echo "exit $?")"
+check "a repo no pack owns has nothing to release" bash -c "cd '$OTHER' && $K stack release"
+
+section "e2e"
+if err=$(cd "$ACME" && STACK_NO_PORTS=1 $K e2e true 2>&1); then fail "e2e refuses a stack that names no ports"; else pass "e2e refuses a stack that names no ports"; fi
+check "and says why" grep -q "named no ports" <<<"$err"
+if err=$(cd "$ACME" && $K e2e true 2>&1); then fail "e2e refuses a tree without Playwright"; else pass "e2e refuses a tree without Playwright"; fi
+check "and says why" grep -q "no @playwright/test" <<<"$err"
+if err=$(cd "$ACME" && $K e2e -e NOEQUALS true 2>&1); then fail "e2e refuses an -e without a value"; else pass "e2e refuses an -e without a value"; fi
+check "and says how to use it" grep -q "usage: keel e2e" <<<"$err"
 
 section "isolation"
 eq "harness paths are byte for byte unchanged after every keel command above" "$before" "$(snapshot_harness)"

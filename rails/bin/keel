@@ -1,26 +1,465 @@
 #!/usr/bin/env bash
 # keel: the front door to sessions that run on keel's rules and rails.
 #
-#   keel claude [args]   run claude on keel's config dir, ~/.keel/claude
-#   keel help            print this help
+#   keel claude [args]        run claude on keel's config dir, ~/.keel/claude
+#   keel pack [dir]           print the pack that owns dir (default: the current directory)
+#   keel base [dir]           print the base branch that pack names, if any
+#   keel protected [dir]      print the branches no session may move: the base, the default
+#                             branch and the pack's `protected` list
+#   keel provision [dir]      prepare a fresh worktree: the pack's provision script, else the default
+#   keel sweep [--apply]      return idle keel-leased trees in this repo's pool that hold no work,
+#                             and release the stacks of trees already returned
+#   keel stack up [args]      start this tree's stack detached through the pack's stack script,
+#                             wait until it serves, print its URL; args go to the script
+#   keel stack down           stop it
+#   keel stack release        free what the stack keeps after down, such as its database
+#   keel stack status         print its URL when it is running, fail when it is not
+#   keel e2e [-e NAME=VALUE]... [command...]
+#                             run command (default: npx playwright test) in the Playwright image,
+#                             on no network but this tree's stack ports, relayed in through Unix sockets
+#   keel hook <name>          Claude Code hook entry point, event JSON on stdin:
+#                               context          SessionStart and SubagentStart
+#                               worktree-create  WorktreeCreate
+#                               worktree-remove  WorktreeRemove
+#                               subagent-stop    SubagentStop
+#   keel help                 print this help
+#
+# A pack is a directory registered under $KEEL_PACKS (default
+# ~/.config/harness/packs, read-only), shared with harness until packs move
+# into their repositories.
 set -euo pipefail
 
-# The config dir is set here and nowhere else: Claude Code ignores
+# The config dir is set by `keel claude` and nowhere else: Claude Code ignores
 # CLAUDE_CONFIG_DIR in project and local settings, and setting it in the shell
 # would move every plain `claude` off harness too.
+#
+# Trees keel leases are held as keel:<branch> and keel:agent-<id>, never
+# harness's claude:, so neither system's sweep or stop hook can return a tree
+# the other holds.
+
+PACKS_DIR="${KEEL_PACKS:-$HOME/.config/harness/packs}"
+LIB_DIR="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")/lib"
+KEEP_FILE="${KEEL_KEEP:-$HOME/.config/keel/keep}"
+
+die() {
+  echo "keel: $*" >&2
+  exit 1
+}
 
 usage() {
   awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0"
 }
 
-case "${1:-}" in
-claude)
+# Prints the pack whose `match` file has a glob matching the origin remote of
+# the repository at $1, or nothing when no pack claims it. Keyed on the remote
+# rather than the path, so every worktree and every clone of a repository
+# resolves to the same pack without a file in any of them.
+pack_for() {
+  local dir="$1" remote pack pattern
+  remote=$(git -C "$dir" remote get-url origin 2>/dev/null) || return 0
+  for pack in "$PACKS_DIR"/*/; do
+    [[ -f "$pack/match" ]] || continue
+    while IFS= read -r pattern || [[ -n "$pattern" ]]; do
+      [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+      # shellcheck disable=SC2053 # the pattern is a glob on purpose
+      if [[ "$remote" == $pattern ]]; then
+        echo "${pack%/}"
+        return 0
+      fi
+    done <"$pack/match"
+  done
+}
+
+# A pack covers several repositories and not every one has the pack's base, so
+# a repository without it keeps its own default rather than failing to lease.
+base_for() {
+  local pack base
+  pack=$(pack_for "$1")
+  [[ -n "$pack" && -f "$pack/base" ]] || return 0
+  base=$(tr -d '[:space:]' <"$pack/base")
+  if git -C "$1" rev-parse --verify --quiet "refs/remotes/origin/$base" >/dev/null; then
+    echo "$base"
+  fi
+}
+
+# The base is protected only where the repository has it, like base_for. A
+# clone with no origin/HEAD cannot say which branch is the default, so main and
+# master both count rather than neither.
+protected_for() {
+  local dir="$1" pack head
+  {
+    base_for "$dir"
+    if head=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null); then
+      echo "${head#origin/}"
+    else
+      printf 'main\nmaster\n'
+    fi
+    pack=$(pack_for "$dir")
+    if [[ -n "$pack" && -f "$pack/protected" ]]; then
+      grep -Ev '^[[:space:]]*(#|$)' "$pack/protected" | tr -d '[:blank:]'
+    fi
+  } | sort -u
+}
+
+# A pack's provision script replaces the default rather than adding to it, so
+# a pack never has to undo a step it does not want.
+provision() {
+  local dir="$1" pack
+  pack=$(pack_for "$dir")
+  if [[ -n "$pack" && -x "$pack/provision" ]]; then
+    (cd "$dir" && "$pack/provision")
+    return
+  fi
+  if [[ -f "$dir/package-lock.json" ]]; then
+    npm_ci "$dir"
+  fi
+}
+
+# A reused pool tree keeps its node_modules, so npm ci runs only when the
+# lockfile or Node has changed since the install that wrote the stamp. The
+# stamp keeps harness's name, so a tree either one provisioned is not
+# reinstalled by the other.
+npm_ci() {
+  local dir="$1" stamp want
+  stamp="$dir/node_modules/.harness-provisioned"
+  want="$(node --version) $(sha256sum "$dir/package-lock.json" | cut -d' ' -f1)"
+  [[ "$(cat "$stamp" 2>/dev/null)" == "$want" ]] && return 0
+  (cd "$dir" && npm ci) && echo "$want" >"$stamp"
+}
+
+# Injects the owning pack's rules.md. Runs for SessionStart, which fires on
+# startup, resume, /clear and after compaction, and for SubagentStart, because
+# a subagent gets no SessionStart of its own and would otherwise work without
+# the rules its parent was given. Packs are shared with harness until row 11,
+# so their rules may name `harness <verb>`; the note maps those onto keel.
+hook_context() {
+  local input event cwd pack
+  input=$(cat)
+  event=$(jq -r .hook_event_name <<<"$input")
+  cwd=$(jq -r .cwd <<<"$input")
+  pack=$(pack_for "$cwd")
+  [[ -n "$pack" && -f "$pack/rules.md" ]] || return 0
+  jq -n --arg event "$event" --arg name "$(basename "$pack")" --rawfile rules "$pack/rules.md" \
+    '{hookSpecificOutput: {
+        hookEventName: $event,
+        additionalContext: ("Rules from the " + $name + " pack, which owns this repository. They hold alongside ~/.keel/claude/CLAUDE.md and win where the two disagree. This is a keel session: where these rules name `harness <verb>`, run `keel <verb>` instead.\n\n" + $rules)
+      }}'
+}
+
+# Replaces Claude Code's own `git worktree add` for EnterWorktree, `claude
+# --worktree` and subagents with worktree isolation, so all of them get a
+# provisioned pool tree on a named branch instead of a bare checkout. stdout
+# carries the path and nothing else; everything treehouse says goes to stderr.
+hook_worktree_create() {
+  local input name cwd base path
+  input=$(cat)
+  name=$(jq -r .name <<<"$input")
+  cwd=$(jq -r .cwd <<<"$input")
+  [[ -n "$name" && "$name" != null ]] || die "WorktreeCreate gave no name"
+  # A branch that already has a worktree is that worktree: asking for the same
+  # name again resumes it rather than leasing a second tree git would refuse.
+  path=$(git -C "$cwd" worktree list --porcelain |
+    awk -v ref="branch refs/heads/$name" '/^worktree /{p=substr($0,10)} $0==ref{print p; exit}')
+  if [[ -n "$path" ]]; then
+    echo "$path"
+    return
+  fi
+
+  base=$(base_for "$cwd")
+  local args=(get --lease --lease-holder "keel:$name")
+  [[ -n "$base" ]] && args+=(--base "$base")
+
+  # -b refuses a branch that already exists, so an existing branch with no
+  # worktree is leased detached and switched to. A failed switch returns the
+  # lease, or the tree stays held by nothing.
+  if git -C "$cwd" rev-parse --verify --quiet "refs/heads/$name" >/dev/null; then
+    path=$(cd "$cwd" && treehouse "${args[@]}") || die "lease failed (pool exhausted? treehouse status)"
+    if ! git -C "$path" switch --quiet "$name" >&2; then
+      treehouse return "$path" >&2 || true
+      die "could not switch the leased tree to $name"
+    fi
+  else
+    path=$(cd "$cwd" && treehouse "${args[@]}" --branch "$name") || die "lease failed (pool exhausted? treehouse status)"
+  fi
+  echo "$path"
+}
+
+# Prints the treehouse status entry for the pool tree at $1, or nothing when
+# the path is not a pool tree.
+pool_entry() {
+  local top
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 0
+  (cd "$top" && treehouse status --json 2>/dev/null) | jq -c --arg p "$top" '.[] | select(.path == $p)'
+}
+
+# Returns the pool tree at $1 when it holds nothing worth keeping: no
+# uncommitted change and no commit that is not already on a remote. A tree
+# with work in it stays leased so the work can be reviewed. The agent-* branch
+# of a returned tree is deleted, since by then it points at nothing new.
+release_if_empty() {
+  local path="$1" branch
+  if [[ -n "$(git -C "$path" status --porcelain)" ]]; then
+    echo "kept $path: uncommitted changes" >&2
+    return 1
+  fi
+  if [[ -z "$(git -C "$path" for-each-ref --contains HEAD --count=1 refs/remotes)" ]]; then
+    echo "kept $path: commits not on any remote" >&2
+    return 1
+  fi
+  branch=$(git -C "$path" rev-parse --abbrev-ref HEAD)
+  stack_down "$path" >&2
+  stack_release "$path"
+  treehouse return "$path" >&2
+  if [[ "$branch" == agent-* ]]; then
+    git -C "$path" branch -D --quiet "$branch" >&2 || true
+  fi
+  echo "returned $path" >&2
+}
+
+# Claude Code does not fire WorktreeRemove for subagent trees, so the tree is
+# released when the subagent stops. Only a tree leased for this very subagent
+# is touched: a subagent without isolation runs in its parent's tree, which
+# must never be returned from under the parent.
+hook_subagent_stop() {
+  local input agent_id cwd entry
+  input=$(cat)
+  agent_id=$(jq -r .agent_id <<<"$input")
+  cwd=$(jq -r .cwd <<<"$input")
+  entry=$(pool_entry "$cwd")
+  [[ -n "$entry" ]] || return 0
+  [[ "$(jq -r .lease_holder <<<"$entry")" == "keel:agent-$agent_id" ]] || return 0
+  release_if_empty "$(jq -r .path <<<"$entry")" || true
+}
+
+# Returns every idle tree keel leased in this repository's pool that holds
+# nothing worth keeping, for sessions that ended without a stop hook running.
+# Then releases the stack of every tree already back in the pool, since
+# `treehouse return` by hand runs no hook and leaves a database behind. A tree
+# on the keep list is never touched. Dry run unless --apply.
+sweep() {
+  local apply=0 entry path
+  [[ "${1:-}" == "--apply" ]] && apply=1
+  while IFS= read -r entry; do
+    path=$(jq -r .path <<<"$entry")
+    if is_kept "$path"; then
+      echo "kept $path: on the keep list" >&2
+    elif [[ "$apply" == 1 ]]; then
+      release_if_empty "$path" || true
+    else
+      echo "would check $path ($(jq -r .lease_holder <<<"$entry"))"
+    fi
+  done < <(treehouse status --json |
+    jq -c '.[] | select(.status == "leased" and (.lease_holder // "" | startswith("keel:")) and (.processes | length == 0))')
+  while IFS= read -r path; do
+    if is_kept "$path"; then
+      echo "kept $path: on the keep list" >&2
+    elif [[ "$apply" == 1 ]]; then
+      stack_release "$path"
+    else
+      echo "would release the stack of $path (returned)"
+    fi
+  done < <(treehouse status --json | jq -r '.[] | select(.status == "available") | .path')
+}
+
+is_kept() {
+  [[ -f "$KEEP_FILE" ]] && grep -qxF "$1" "$KEEP_FILE"
+}
+
+# A tree's stack keeps its pid, log and URL in the worktree's own git dir, which
+# git never tracks, so a running stack does not read as work in the tree.
+stack_state() {
+  local top
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || die "not a git repository: $1"
+  echo "$(git -C "$top" rev-parse --absolute-git-dir)/keel-stack"
+}
+
+# The stack runs as the leader of its own session, so its pid is also the
+# process group that holds every server it started in the foreground.
+stack_alive() {
+  local pid
+  [[ -f "$1/pid" ]] || return 1
+  pid=$(<"$1/pid")
+  kill -0 -- "-$pid" 2>/dev/null
+}
+
+# Starts the pack's `stack run` under setsid and nohup, so it outlives the
+# Claude session and the terminal that started it, and the person can open it
+# after the agent has finished. Ready means the pack's `stack url` answers
+# HTTP, since a stack that prints its URL can still be minutes from serving.
+stack_up() {
+  local dir="$1" top pack state url deadline
   shift
-  CLAUDE_CONFIG_DIR="$HOME/.keel/claude" exec claude "$@"
+  top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || die "not a git repository: $dir"
+  pack=$(pack_for "$top")
+  [[ -n "$pack" && -x "$pack/stack" ]] || die "no pack with a stack script owns $top"
+  state=$(stack_state "$top")
+  mkdir -p "$state"
+
+  if stack_alive "$state"; then
+    echo "keel: the stack is already running" >&2
+  else
+    (
+      cd "$top"
+      setsid nohup "$pack/stack" run "$@" >"$state/log" 2>&1 </dev/null &
+      echo $! >"$state/pid"
+    )
+    rm -f "$state/url"
+  fi
+
+  deadline=$((SECONDS + ${KEEL_STACK_TIMEOUT:-900}))
+  for (( ; ; )); do
+    url=$(cd "$top" && "$pack/stack" url 2>/dev/null) || url=""
+    if [[ -n "$url" ]] && curl -s -o /dev/null --max-time 5 "$url"; then
+      break
+    fi
+    if ! stack_alive "$state"; then
+      tail -n 40 "$state/log" >&2
+      die "the stack exited before it served; full log in $state/log"
+    fi
+    if ((SECONDS >= deadline)); then
+      tail -n 40 "$state/log" >&2
+      die "the stack did not serve in time and is still running; log in $state/log, \`keel stack down\` stops it"
+    fi
+    sleep 2
+  done
+  echo "$url" >"$state/url"
+  echo "$url"
+  echo "log: $state/log" >&2
+}
+
+# Stops what `stack run` keeps in the foreground. Anything the script detached
+# on purpose, such as a local database, stays up like any other local database.
+stack_down() {
+  local state pid
+  # A tree that is already gone has nothing left to stop.
+  state=$(stack_state "$1" 2>/dev/null) || return 0
+  if stack_alive "$state"; then
+    pid=$(<"$state/pid")
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    for _ in {1..20}; do
+      stack_alive "$state" || break
+      sleep 0.5
+    done
+    if stack_alive "$state"; then kill -KILL -- "-$pid" 2>/dev/null || true; fi
+    echo "stopped the stack in $(git -C "$1" rev-parse --show-toplevel)"
+  fi
+  rm -f "$state/pid" "$state/url"
+}
+
+# Frees what the pack's stack keeps after `stack down` on purpose, such as a
+# local database and its claim on a shared port range, so a tree going back to
+# the pool holds nothing. A pack whose stack has no `release` exits 2, which
+# means there is nothing to free.
+stack_release() {
+  local top pack code=0
+  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 0
+  pack=$(pack_for "$top")
+  [[ -n "$pack" && -x "$pack/stack" ]] || return 0
+  (cd "$top" && "$pack/stack" release) >&2 || code=$?
+  case "$code" in
+  0) echo "released the stack of $top" >&2 ;;
+  2) ;;
+  *) echo "keel: releasing the stack of $top failed with $code" >&2 ;;
+  esac
+}
+
+stack_status() {
+  local state
+  state=$(stack_state "$1")
+  if stack_alive "$state"; then
+    echo "running: $(cat "$state/url" 2>/dev/null || echo "starting, not serving yet")"
+    echo "log: $state/log"
+  else
+    echo "stopped"
+    return 1
+  fi
+}
+
+# Runs a command in the Playwright image matching the tree's @playwright/test,
+# in a container on `--network none`. The browser on the host's network sees
+# every Docker interface come and go and aborts in-flight requests with
+# ERR_NETWORK_CHANGED; in a namespace of its own it sees only `lo`. The ports
+# the pack's `stack ports` names are relayed in through Unix sockets in a
+# directory both sides mount, so the app keeps the URLs it was configured with.
+# KEEL_E2E_STACK names another tree whose running stack to drive, so a
+# checkout without a stack of its own tests against it without writing there.
+e2e() {
+  local env=() ports=() top pack port version image name dir code=0
+  while [[ "${1:-}" == -e ]]; do
+    [[ "${2:-}" == *=* ]] || die "usage: keel e2e [-e NAME=VALUE]... [command...]"
+    env+=(-e "$2")
+    shift 2
+  done
+  [[ "${1:-}" == -- ]] && shift
+  (($#)) || set -- npx playwright test
+
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || die "not a git repository: $PWD"
+  pack=$(pack_for "$top")
+  [[ -n "$pack" && -x "$pack/stack" ]] || die "no pack with a stack script owns $top"
+  while read -r _ port; do
+    [[ "$port" =~ ^[0-9]+$ ]] && ports+=("$port")
+  done < <(cd "${KEEL_E2E_STACK:-$top}" && "$pack/stack" ports)
+  ((${#ports[@]})) || die "the pack's \`stack ports\` named no ports for ${KEEL_E2E_STACK:-$top}; has its stack started there?"
+  version=$(jq -r .version "$top/node_modules/@playwright/test/package.json" 2>/dev/null) ||
+    die "no @playwright/test installed in $top"
+  image="mcr.microsoft.com/playwright:v$version-noble"
+
+  name="keel-e2e-$$-$RANDOM"
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/keel-e2e.XXXXXX")
+  # shellcheck disable=SC2064 # expand now: the names are this run's
+  trap "docker rm -f '$name' >/dev/null 2>&1 || true; rm -rf '$dir'" EXIT
+  node "$LIB_DIR/sockrelay.mjs" host "$dir" "${ports[@]}" -- \
+    docker run --rm --name "$name" --network none --ipc=host --init \
+    --user "$(id -u):$(id -g)" -e HOME=/tmp "${env[@]}" \
+    -v "$top:$top" -v "$dir:/keel/sock" -v "$LIB_DIR:/keel/lib:ro" -w "$PWD" \
+    "$image" node /keel/lib/sockrelay.mjs guest /keel/sock "${ports[@]}" -- "$@" || code=$?
+  return "$code"
+}
+
+hook_worktree_remove() {
+  local input path
+  input=$(cat)
+  path=$(jq -r '.worktree_path // .path // empty' <<<"$input")
+  [[ -n "$path" ]] || die "WorktreeRemove gave no path: $input"
+  stack_down "$path" >&2
+  stack_release "$path"
+  treehouse return "$path" >&2
+}
+
+cmd="${1:-}"
+[[ -n "$cmd" ]] || {
+  usage >&2
+  exit 1
+}
+shift
+
+case "$cmd" in
+claude) CLAUDE_CONFIG_DIR="$HOME/.keel/claude" exec claude "$@" ;;
+pack) pack_for "${1:-$PWD}" ;;
+base) base_for "${1:-$PWD}" ;;
+protected) protected_for "${1:-$PWD}" ;;
+provision) provision "${1:-$PWD}" ;;
+sweep) sweep "${1:-}" ;;
+e2e) e2e "$@" ;;
+stack)
+  case "${1:-}" in
+  up) shift && stack_up "$PWD" "$@" ;;
+  down) stack_down "$PWD" ;;
+  status) stack_status "$PWD" ;;
+  release) stack_release "$PWD" ;;
+  *) die "usage: keel stack up [args] | down | status | release" ;;
+  esac
   ;;
-help | -h | --help)
-  usage
+hook)
+  case "${1:-}" in
+  context) hook_context ;;
+  worktree-create) hook_worktree_create ;;
+  worktree-remove) hook_worktree_remove ;;
+  subagent-stop) hook_subagent_stop ;;
+  *) die "unknown hook: ${1:-}" ;;
+  esac
   ;;
+help | -h | --help) usage ;;
 *)
   usage >&2
   exit 1

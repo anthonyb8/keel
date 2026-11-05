@@ -14,11 +14,24 @@ git clone git@github.com:anthonyb8/keel.git ~/keel
 keel claude                  # then /login once in this session
 ```
 
-Requires `claude`, `jq` and `git`.
+`rails/shell/keel.zsh` defines `th`, `thr`, `tt` and `ttr` on keel; source it only at the switch, since harness's shell defines the same names.
+
+Requires `claude`, `treehouse`, `jq` and `git`.
 
 `keel claude` runs `claude` with `CLAUDE_CONFIG_DIR=~/.keel/claude`.
 Its login, transcripts, memory, plugins and background jobs live there, apart from harness's.
 The variable is set by `keel claude` alone, never in the shell or a settings file.
+
+## What it does
+
+- **Trees.** In a keel session, `EnterWorktree`, `claude --worktree` and subagents with worktree isolation lease a pool tree from treehouse, on a named branch off the pack's base.
+  keel holds its trees as `keel:<branch>` and `keel:agent-<id>`, harness as `claude:...`, so neither system's sweep or stop hook ever returns the other's tree.
+  A subagent's empty tree goes back to the pool when it stops; `keel sweep --apply` catches the rest, except trees listed in `~/.config/keel/keep`.
+- **Packs.** keel reads harness's packs from `~/.config/harness/packs` (or `$KEEL_PACKS`), read-only, until packs move into their repositories.
+  A session in a repository a pack owns gets the pack's rules, with a note that where they name `harness <verb>`, the session runs `keel <verb>`.
+- **Stacks.** `keel stack up` starts the tree's stack through the pack's `stack` script and prints its URL once it serves; `keel stack down` stops it.
+  `keel e2e` runs browser tests against it from a container on no network but the stack's ports.
+  keel's stack state lives in the tree's git dir as `keel-stack`, apart from harness's.
 
 ## The four layers
 
@@ -35,7 +48,7 @@ Each directory is created by the row that first puts something in it.
 
 ```
 rules/       CLAUDE.md, OPINIONS.md, VOICE.md
-rails/       bin/keel, settings.json; later git-guard, hooks and shell
+rails/       bin/keel, settings.json and its hooks, lib/sockrelay.mjs, shell/keel.zsh; later git-guard
 method/      the mode, playbooks, skills and agents
 trust/       the contract, its hooks and skills
 learning/    reflect and evals
@@ -47,7 +60,7 @@ tests/       run.sh for the logic, against a throwaway HOME
 ## Tests
 
 ```sh
-tests/run.sh    # install and keel claude under a throwaway HOME; touches nothing on the machine
+tests/run.sh    # the logic, against throwaway repos, pools and packs under a throwaway HOME; no Claude calls
 ```
 
 CI runs shellcheck and `tests/run.sh` on every pull request.
