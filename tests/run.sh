@@ -872,15 +872,32 @@ out=$(ci)
 refute "a playbook change with no result fails" ci
 eq "naming only the playbook it reaches" "bug-fix" "$(grep '^FAIL' <<<"$out" | awk '{print $2}' | tr -d ':')"
 mkdir -p "$CI/learning/evals/results"
-printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\n' "0000" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\nruns: 1 per side\n' "0000" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
 git -C "$CI" add -A && git -C "$CI" commit -qm "stale result"
 refute "a result for other method content fails" ci
-printf '# r\n\nmethod-trust: %s\nplaybook: pause\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+printf '# r\n\nmethod-trust: %s\nplaybook: pause\nruns: 1 per side\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
 git -C "$CI" commit -qam "result for another playbook"
 refute "a result for another playbook does not count, whatever its file is named" ci
 printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" commit -qam "bare result"
+refute "a file that is neither an eval's result nor an exemption with a reason does not count" ci
+echo "exempt: " >>"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" commit -qam "empty exemption"
+refute "an exemption with no reason does not count" ci
+echo "exempt: the step's wording changed, not what it asks" >>"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" commit -qam "exemption"
+check "an exemption naming this content and a reason passes" ci
+printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\nruns: 1 per side\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
 git -C "$CI" commit -qam "result"
 check "a result naming this content passes" ci
+echo "A line." >>"$CI/method/skills/pickup/SKILL.md"
+git -C "$CI" commit -qam "pickup skill"
+# bug-fix is still reached by its own change above, and its result is now stale.
+eq "a skill change reaches the playbooks it names, and no others" "bug-fix issue" "$(ci | grep '^FAIL' | awk '{print $2}' | tr -d ':' | sort | paste -sd' ')"
+echo "A line." >>"$CI/trust/skills/verify/SKILL.md"
+git -C "$CI" commit -qam "verify skill"
+eq "and the playbooks that run it" "autonomous-run babysit-pr bug-fix issue" \
+  "$(ci | grep '^FAIL' | awk '{print $2}' | tr -d ':' | sort | paste -sd' ')"
 echo "A line." >>"$CI/method/router.md"
 git -C "$CI" commit -qam "router"
 eq "a change to the router reaches every playbook" "$(for d in "$EV"/*/; do [[ -f "$d/prompt.md" ]] && basename "$d"; done | sort | paste -sd' ')" \
