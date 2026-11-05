@@ -30,8 +30,9 @@
 #                             end the run and archive it
 #   keel status --json [path] every run not yet archived, or the one for path; docs/status.md
 #   keel verdict [--json]     the last keel-verifier's verdict for this tree; passes only on a pass at HEAD
-#   keel merge <n>            merge PR n with the method the pack's `merge` file names for its target
-#                             and head, when every source agrees and it is ready; else exit 2 and why
+#   keel merge <squash|commit> [n]
+#                             merge PR n, else the current branch's, with that method once it is
+#                             ready and GitHub allows it; else exit 2 and why
 #   keel reflect triage [session] < findings.json
 #                             /reflect's twice rule and level order: accepted, held and rejected
 #   keel eval <playbook> [--variant <keel checkout>] [-n <runs>]
@@ -1260,16 +1261,13 @@ verdict() { # verdict [--json]
   [[ "$(jq -r .verdict "$file")" == pass ]] || die "the verifier failed this code: fix each finding, then /verify again"
 }
 
-# `keel merge <n>` is /merge's clear path as code. It reads the PR, the
-# pack's rule for its target and head, GitHub's settings and rulesets, the
-# checks, and how earlier PRs under the same rule landed, and merges only when
-# every source agrees and the PR is ready. Anything else exits 2 with a reason
-# and the facts gathered, for the agent to take to the user; exit 1 is a call
-# that broke. It never guesses: a state it does not recognise is exit 2.
-#
-# The rule is the pack's `merge` file: one `<target> <head glob> <method>` per
-# line, the first line matching both wins, and the method is squash, merge,
-# rebase, or ask for a merge a rule puts a condition on.
+# `keel merge <squash|commit> [n]` is /merge's clear path as code: the user
+# names the method, and the PR is n, else the current branch's. It checks the
+# PR is ready, that GitHub allows the method, and that no PR from the same head
+# goes to another branch, then merges pinned to the head it checked. Anything
+# else exits 2 with a reason and the facts gathered, for the agent to take to
+# the user; exit 1 is a call that broke. It never guesses: a state it does not
+# recognise is exit 2.
 MERGE_FACTS='{}'
 
 merge_fact() { # merge_fact <key> <json>
@@ -1279,26 +1277,6 @@ merge_fact() { # merge_fact <key> <json>
 merge_ask() { # merge_ask <reason>: hands the merge to the agent
   jq -n --arg r "$1" --argjson f "$MERGE_FACTS" '{result: "ask", reason: $r} + $f'
   exit 2
-}
-
-# The first line of the rule file at $1 matching target $2 and head $3, as
-# `<line number>\t<method>\t<line>`; nothing when no line matches. Every line
-# is checked before any is matched, so a malformed line anywhere comes back as
-# the method `malformed` rather than letting a later line win.
-merge_rule() { # merge_rule <file> <target> <head>
-  local n=0 line target glob method extra hit=""
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    n=$((n + 1))
-    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
-    read -r target glob method extra <<<"$line"
-    if [[ -z "$method" || -n "$extra" || ! "$method" =~ ^(squash|merge|rebase|ask)$ ]]; then
-      printf '%s\tmalformed\t%s\n' "$n" "$line"
-      return
-    fi
-    # shellcheck disable=SC2053 # the glob is a pattern on purpose
-    [[ -z "$hit" && "$target" == "$2" && "$3" == $glob ]] && hit=$(printf '%s\t%s\t%s' "$n" "$method" "$line")
-  done <"$1"
-  [[ -z "$hit" ]] || printf '%s\n' "$hit"
 }
 
 # Branch protection for $1, or {} when GitHub says the branch has none. Any
@@ -1314,21 +1292,31 @@ merge_protection() { # merge_protection <branch>
   fi
 }
 
-merge_pr() { # merge_pr <PR number>
-  [[ $# -eq 1 && "$1" =~ ^[0-9]+$ ]] || die "usage: keel merge <PR number>"
-  local n="$1" merged pr target head oid pack file rule line method text repo rules protection others landed checks state after out want now_oid
-  pr=$(gh pr view "$n" --json number,title,url,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,reviewDecision) ||
-    die "gh could not read PR #$n"
+merge_pr() { # merge_pr <squash|commit> [PR number]
+  local usage="usage: keel merge <squash|commit> [PR number]" method n pr target head oid repo rules protection others checks state after out now_oid
+  case "${1:-}" in
+  squash) method=squash ;;
+  commit) method=merge ;;
+  *) die "$usage" ;;
+  esac
+  [[ $# -eq 1 || ($# -eq 2 && "$2" =~ ^[0-9]+$) ]] || die "$usage"
+  local fields=number,title,url,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,reviewDecision
+  if [[ $# -eq 2 ]]; then
+    pr=$(gh pr view "$2" --json "$fields") || die "gh could not read PR #$2"
+  else
+    pr=$(gh pr view --json "$fields" 2>/dev/null) || merge_ask "no PR for the current branch: name one"
+  fi
+  n=$(jq -r .number <<<"$pr")
   target=$(jq -r .baseRefName <<<"$pr")
   head=$(jq -r .headRefName <<<"$pr")
   oid=$(jq -r .headRefOid <<<"$pr")
   merge_fact pr "$(jq -c '{number, title, url, head: .headRefName, target: .baseRefName, oid: .headRefOid,
     state, draft: .isDraft, mergeable, merge_state: .mergeStateStatus, review: .reviewDecision}' <<<"$pr")"
+  merge_fact method "\"$method\""
   [[ "$(jq -r .state <<<"$pr")" == OPEN ]] || merge_ask "the PR is not open"
   [[ "$(jq -r .isDraft <<<"$pr")" == false ]] || merge_ask "the PR is a draft"
 
-  # Ready first, so any rule question that follows is about a PR that could
-  # merge: every check passed, a clean merge state, no changes requested.
+  # Ready: every check passed, a clean merge state, no changes requested.
   checks=$(gh pr checks "$n" --json name,bucket,link 2>/dev/null || true)
   [[ -n "$checks" ]] || checks='[]'
   merge_fact checks "$checks"
@@ -1347,71 +1335,31 @@ merge_pr() { # merge_pr <PR number>
   [[ "$(jq -r .mergeable <<<"$pr")" != CONFLICTING ]] || merge_ask "the PR has conflicts with $target"
   [[ "$(jq -r .reviewDecision <<<"$pr")" != CHANGES_REQUESTED ]] || merge_ask "a reviewer requested changes"
 
-  # GitHub's settings and rulesets, and the head's PRs into other branches,
-  # gathered before the rule so a question about it has them in hand.
-  repo=$(gh repo view --json nameWithOwner,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed,deleteBranchOnMerge) ||
+  # GitHub must allow the method: the repository's settings, the target's
+  # rulesets, and linear history from either a ruleset or branch protection.
+  repo=$(gh repo view --json squashMergeAllowed,mergeCommitAllowed,deleteBranchOnMerge) ||
     die "gh could not read the repository's settings"
-  # The pack is picked by the origin remote and the PR by gh's default
-  # repository, which `gh repo set-default` can point elsewhere.
-  [[ "$(git remote get-url origin 2>/dev/null)" =~ [/:]$(jq -r .nameWithOwner <<<"$repo")(\.git)?$ ]] ||
-    merge_ask "gh's repository, $(jq -r .nameWithOwner <<<"$repo"), is not the origin remote the pack's rule is for"
   rules=$(gh api "repos/{owner}/{repo}/rules/branches/$target") || die "gh could not read the rulesets for $target"
   protection=$(merge_protection "$target") || merge_ask "could not read branch protection for $target"
   merge_fact github "$(jq -nc --argjson r "$repo" --argjson s "$rules" --argjson p "$protection" '{
     settings: $r, rulesets: [$s[] | {type, parameters}],
     linear_history: (($p.required_linear_history.enabled // false) or any($s[]; .type == "required_linear_history")),
     merge_queue: any($s[]; .type == "merge_queue")}')"
-  others=$(gh pr list --head "$head" --state all --json number,baseRefName,state,url) || die "gh could not list PRs from $head"
-  others=$(jq -c --argjson n "$n" --arg t "$target" '[.[] | select(.number != $n and .baseRefName != $t)]' <<<"$others")
-  merge_fact paired "$others"
-
-  # The rule for this target and head.
-  pack=$(pack_for "$PWD")
-  file="$pack/merge"
-  [[ -n "$pack" && -f "$file" ]] || merge_ask "no rule for target: the repository's pack has no merge file"
-  rule=$(merge_rule "$file" "$target" "$head")
-  [[ -n "$rule" ]] || merge_ask "no rule for target: no line in $file matches $target from $head"
-  IFS=$'\t' read -r line method text <<<"$rule"
-  merge_fact rule "$(jq -nc --arg s "$file:$line" --arg t "$text" --arg m "$method" '{source: $s, line: $t, method: $m}')"
-  case "$method" in
-  squash | merge | rebase) ;;
-  ask) merge_ask "the rule says to ask for a merge into $target from $head" ;;
-  *) merge_ask "a line of $file is not <target> <head glob> squash|merge|rebase|ask" ;;
-  esac
-
-  # GitHub must allow the rule's method.
-  [[ "$(jq -r --arg m "$method" '{squash: .squashMergeAllowed, merge: .mergeCommitAllowed, rebase: .rebaseMergeAllowed}[$m]' <<<"$repo")" == true ]] ||
-    merge_ask "the rule names $method, which the repository's settings do not allow"
+  [[ "$(jq -r --arg m "$method" '{squash: .squashMergeAllowed, merge: .mergeCommitAllowed}[$m]' <<<"$repo")" == true ]] ||
+    merge_ask "the repository's settings do not allow a $method"
   if jq -e --arg m "$method" 'any(.[]; .type == "pull_request" and ((.parameters.allowed_merge_methods // [$m]) | any(. == $m) | not))' <<<"$rules" >/dev/null; then
-    merge_ask "the rule names $method, which a ruleset on $target does not allow"
+    merge_ask "a ruleset on $target does not allow a $method"
   fi
   if [[ "$method" == merge && "$(jq -r .github.linear_history <<<"$MERGE_FACTS")" == true ]]; then
-    merge_ask "the rule names a merge commit, which $target's required linear history rules out"
+    merge_ask "$target requires linear history, which rules out a merge commit"
   fi
 
   # A head branch with a PR into another branch is paired, such as a hotfix
-  # into two lines, and the order or the pairing is a rule only a person reads.
+  # into two lines, and which lands first is the user's call.
+  others=$(gh pr list --head "$head" --state all --json number,baseRefName,state,url) || die "gh could not list PRs from $head"
+  others=$(jq -c --argjson n "$n" --arg t "$target" '[.[] | select(.number != $n and .baseRefName != $t)]' <<<"$others")
+  merge_fact paired "$others"
   [[ "$others" == "[]" ]] || merge_ask "the head branch $head also has a PR into another branch"
-
-  # How earlier PRs under the same rule line landed: one parent for a squash
-  # or rebase, two for a merge commit. A disagreement may mean the rule
-  # changed, or is wrong.
-  git fetch -q origin "$target" || die "could not fetch $target"
-  merged=$(gh pr list --base "$target" --state merged --limit 20 --json number,headRefName,mergeCommit) ||
-    die "gh could not list the PRs merged into $target"
-  landed='[]'
-  local num phead commit parents
-  while IFS=$'\t' read -r num phead commit; do
-    [[ "$(merge_rule "$file" "$target" "$phead" | cut -f1)" == "$line" ]] || continue
-    parents=$(git cat-file -p "$commit" 2>/dev/null | grep -c '^parent ' || true)
-    landed=$(jq -c --argjson n "$num" --arg h "$phead" --argjson p "$parents" '. + [{number: $n, head: $h, parents: $p}]' <<<"$landed")
-  done < <(jq -r '.[] | select(.mergeCommit) | [.number, .headRefName, .mergeCommit.oid] | @tsv' <<<"$merged")
-  merge_fact history "$landed"
-  want=1
-  [[ "$method" == merge ]] && want=2
-  if jq -e --argjson w "$want" 'any(.[]; .parents != $w)' <<<"$landed" >/dev/null; then
-    merge_ask "earlier PRs under the same rule did not land as a $method"
-  fi
 
   # The head the checks were read against is the one merged.
   now_oid=$(gh pr view "$n" --json headRefOid -q .headRefOid) || die "gh could not read PR #$n again"
