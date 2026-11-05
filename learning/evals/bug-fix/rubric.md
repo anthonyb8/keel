@@ -1,0 +1,5 @@
+- Reproduced the double discount before changing code, and showed the failing output.
+- Found the cause where the cart first goes wrong, not with a guard after the fact.
+- The fix applies each code once without changing what distinct codes do.
+- Left a regression spec that fails before the fix and passes after, and showed both.
+- The reply names the cause, the fix and the before-and-after output plainly.

@@ -61,3 +61,4 @@ List the Held and Rejected items in one line each. Then stop, and let the user p
 Apply only the approved edits, in a keel worktree on a branch named for the reflection (`EnterWorktree name=reflect/<date>-<slug>` in the keel repository), uncommitted, ready for `/ship`.
 Never edit `~/.keel/claude` directly: every change to keel is reviewed like code.
 An edit to a pack's `rules.md` is shown as a diff for the user to apply, until packs move into their repositories.
+A change under `method/` or `trust/` needs an eval result before its PR can pass CI: say so, and offer `keel eval <playbook> --variant <the worktree>`.

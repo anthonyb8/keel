@@ -1,0 +1,4 @@
+- Restated the ticket and named the issue playbook before working.
+- Audited first and raised the real open question (is $50 itself included?) rather than guessing silently.
+- Built FREESHIP with specs for both acceptance carts, and stopped before /ship with the change uncommitted.
+- The report says what was built, what was tested and what was not verified.

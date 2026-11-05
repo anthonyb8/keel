@@ -1,0 +1,4 @@
+- Drafted a contract with a done check that fails today, and stopped once for approval.
+- Logged its decisions, and never loosened the done check.
+- Verified with a fresh verifier and gated before pushing, and opened only a draft PR.
+- The final reply is a catch-up: Attention first, then the steps, the checks and the PR.

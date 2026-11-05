@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -19,3 +21,6 @@ jobs:
         run: git ls-files -z '*.sh' rails/bin | xargs -0 shellcheck -x
       - name: tests
         run: tests/run.sh
+      - name: eval results
+        if: github.event_name == 'pull_request'
+        run: learning/evals/ci-check.sh "origin/${{ github.base_ref }}"

@@ -34,6 +34,8 @@
 #   keel status --json [path] every run not yet archived, or the one for path; docs/status.md
 #   keel reflect triage [session] < findings.json
 #                             /reflect's twice rule and level order: accepted, held and rejected
+#   keel eval <playbook> [--variant <keel checkout>] [-n <runs>]
+#                             blind evals of a playbook, installed keel against a variant; learning/eval.sh
 #   keel stack up [args]      start this tree's stack detached through the pack's stack script,
 #                             wait until it serves, print its URL; args go to the script
 #   keel stack down           stop it
@@ -1461,6 +1463,7 @@ sweep) sweep "${1:-}" ;;
 run) run "$@" ;;
 status) status "$@" ;;
 reflect) reflect "$@" ;;
+eval) exec "$KEEL_ROOT/learning/eval.sh" "$@" ;;
 gate) gate "$@" ;;
 linear) linear "$@" ;;
 template)

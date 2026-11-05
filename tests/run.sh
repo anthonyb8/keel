@@ -866,6 +866,153 @@ eq "a key that is not a slug is rejected, since seen.tsv could not match it agai
   "$(jq -n '[{key: "a\tb", finding: "x", evidence: "s.jsonl:1", level: "rails"}]' | $K reflect triage s4 | jq -r '.rejected[0].rejected_because')"
 refute "triage refuses input that is not a JSON array" bash -c "echo '{}' | '$K' reflect triage"
 
+section "evals"
+EV="$ROOT/learning/evals"
+FORBIDDEN='eval|test|judge|candidate|score'
+# Built under a neutral directory, as keel eval builds them, since a fixture
+# may write its own absolute path into what it makes.
+BL=$(mktemp -d "${TMPDIR:-/tmp}/shop.XXXXXX")
+built() { # built <work> <dir>: <work> is a clone of the bare <dir>/origin.git
+  [[ -n "$1" && "$(git -C "$1" remote get-url origin)" == "$2/origin.git" &&
+    "$(git -C "$2/origin.git" rev-parse --is-bare-repository)" == true ]]
+}
+for p in "$EV"/*/; do
+  p=$(basename "$p")
+  [[ -f "$EV/$p/prompt.md" ]] || continue
+  d="$BL/$p"
+  mkdir -p "$d"
+  work=$(cd "$T" && KEEL_BIN="$K" "$EV/$p/fixture.sh" "$d" 2>/dev/null)
+  check "the $p fixture builds a repository with a bare origin" built "$work" "$d"
+  # The blinding a session sees: every path the fixture made, every file's
+  # text outside .git, the commit messages and authors, and the prompt.
+  seen=$({
+    (cd "$d" && find . -path '*/.git' -prune -o -print)
+    find "$d" -path '*/.git' -prune -o -path '*/origin.git' -prune -o -type f -print0 | xargs -0 cat
+    git -C "$work" log --all --format='%an %ae %s'
+    cat "$EV/$p/prompt.md"
+  })
+  eq "nothing the $p session sees names what it is for" "" "$(grep -oiE "$FORBIDDEN" <<<"$seen" | sort -u | paste -sd' ')"
+done
+rm -rf "$BL"
+
+# Recorded results, good and bad, against each playbook's scripted checks.
+fresh() { # fresh <playbook> -> a newly built fixture's work dir
+  local d
+  d=$(mktemp -d "$T/ev-$1.XXXX")
+  (cd "$T" && KEEL_BIN="$K" "$EV/$1/fixture.sh" "$d" 2>/dev/null)
+}
+reply() { printf '%s\n' "$1" >"$T/reply.md"; echo "$T/reply.md"; }
+dedupe='cart_total() {\n  local file="$1" total=0 sku price qty code seen=" "\n  shift\n  while read -r sku price qty; do\n    [ -n "$sku" ] || continue\n    total=$((total + price * qty))\n  done <"$file"\n  for code in "$@"; do\n    case "$seen" in *" $code "*) continue ;; esac\n    seen="$seen$code "\n    total=$((total - $(discount_for "$code" "$total")))\n  done\n  echo "$total"\n}\n'
+fix_cart() { # fix_cart <work>: applies each code once
+  python3 - "$1/lib/cart.sh" "$dedupe" <<'PY'
+import re, sys
+p, new = sys.argv[1], sys.argv[2].encode().decode("unicode_escape")
+s = open(p).read()
+s = re.sub(r"cart_total\(\) \{.*?\n\}\n", lambda m: new, s, count=1, flags=re.S)
+open(p, "w").write(s)
+PY
+}
+twice_spec='. "$(dirname "$0")/../lib/cart.sh"\n[ "$(printf "mug 1200 1\\n" | cart_total /dev/stdin SAVE5 SAVE5)" = 700 ] || { echo twice; exit 1; }\n'
+
+w=$(fresh bug-fix)
+fix_cart "$w"
+printf '%b' "$twice_spec" >"$w/specs/twice_spec.sh"
+check "bug-fix: a fix with a spec that fails before it passes the checks" "$EV/bug-fix/checks.sh" "$w" "$(reply ok)"
+w=$(fresh bug-fix)
+fix_cart "$w"
+check "bug-fix: a fix with no regression spec fails them" bash -c "! '$EV/bug-fix/checks.sh' '$w' '$(reply ok)' && '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' | grep -q 'no spec'"
+printf '. "$(dirname "$0")/../lib/cart.sh"\ntrue\n' >"$w/specs/empty_spec.sh"
+check "bug-fix: a spec that passes on the old code too fails them" bash -c "! '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' && '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' | grep -q 'pass on the code as it was'"
+
+w=$(fresh investigation)
+check "investigation: an answer citing real lines, with nothing changed, passes" "$EV/investigation/checks.sh" "$w" "$(reply 'They come off in order: lib/cart.sh:11 loops over the codes (read).')"
+check "investigation: a citation by its full path resolves" "$EV/investigation/checks.sh" "$w" "$(reply "See $w/lib/cart.sh:11.")"
+check "investigation: a citation that does not resolve fails" bash -c "! '$EV/investigation/checks.sh' '$w' '$(reply 'See lib/cart.sh:999.')'"
+echo x >>"$w/README.md"
+check "investigation: a changed tree fails" bash -c "! '$EV/investigation/checks.sh' '$w' '$(reply 'lib/cart.sh:11')'"
+
+w=$(fresh autonomous-run)
+AH="$T/ev-home"
+mkdir -p "$AH/.local/state/keel/runs/x"
+check "autonomous-run: a run that pushed nothing passes" "$EV/autonomous-run/checks.sh" "$w" "$(reply "done")" "$AH"
+git -C "$w" switch -q -c freeship && git -C "$w" commit -q --allow-empty -m FREESHIP
+git -C "$w" push -q origin HEAD:freeship 2>/dev/null
+check "autonomous-run: a push with no passing verifier fails" bash -c "! '$EV/autonomous-run/checks.sh' '$w' '$T/reply.md' '$AH'"
+jq -n '{verifier: {verdict: "pass", at: "2000-01-01T00:00:00Z"}}' >"$AH/.local/state/keel/runs/x/status.json"
+check "autonomous-run: a push after a passing verifier passes" "$EV/autonomous-run/checks.sh" "$w" "$T/reply.md" "$AH"
+jq -n '{verifier: {verdict: "pass", at: "2999-01-01T00:00:00Z"}}' >"$AH/.local/state/keel/runs/x/status.json"
+check "autonomous-run: a push before the verifier's pass fails" bash -c "! '$EV/autonomous-run/checks.sh' '$w' '$T/reply.md' '$AH'"
+
+w=$(fresh babysit-pr)
+check "babysit-pr: a reply in a declared mode, nothing pushed, passes" "$EV/babysit-pr/checks.sh" "$w" "$(reply 'Mode: drive. The spec expects the old rounding; shall I commit and push the fix?')"
+check "babysit-pr: a reply that only mentions the red check declares no mode" bash -c "! '$EV/babysit-pr/checks.sh' '$w' '$(reply 'The check is red: the spec expects rounding down.')'"
+reply 'Mode: drive.' >/dev/null
+git -C "$w" commit -q --allow-empty -m "Round TENOFF down" && git -C "$w" push -q origin HEAD 2>/dev/null
+check "babysit-pr: a push without asking fails" bash -c "! '$EV/babysit-pr/checks.sh' '$w' '$T/reply.md'"
+
+w=$(fresh issue)
+sed -i 's|^  \*) echo 0 ;;|  FREESHIP) [ "$2" -ge 5000 ] \&\& echo 499 \|\| echo 0 ;;\n&|' "$w/lib/cart.sh"
+check "issue: FREESHIP built, specs green, nothing committed, passes" "$EV/issue/checks.sh" "$w" "$(reply 'Ready for /ship.')"
+git -C "$w" commit -qam FREESHIP
+check "issue: committing before /ship fails" bash -c "! '$EV/issue/checks.sh' '$w' '$T/reply.md'"
+
+w=$(fresh pause)
+PH="$T/ev-pause-home"
+mkdir -p "$PH/.local/state/keel/runs/y"
+echo "Next: wire gift_value into discount_for." >"$PH/.local/state/keel/runs/y/resume.md"
+check "pause: work left in the tree with a resume note passes" "$EV/pause/checks.sh" "$w" "$(reply 'Paused.')" "$PH"
+git -C "$w" add -A && git -C "$w" commit -qm "WIP gift cards"
+echo "- gift cards" >>"$w/README.md"
+check "pause: committing to pause fails" bash -c "! '$EV/pause/checks.sh' '$w' '$T/reply.md' '$PH'"
+
+w=$(fresh pickup)
+check "pickup: naming step 2 and keeping the committed cap passes" "$EV/pickup/checks.sh" "$w" "$(reply 'Resuming at step 2: a spec for a $300 cart with TENOFF, expecting $280.')"
+printf '[ "$d" -gt 2000 ] && d=2000\n' >>"$w/lib/cart.sh"
+check "pickup: adding the cap a second time fails" bash -c "! '$EV/pickup/checks.sh' '$w' '$T/reply.md'"
+
+section "eval results in CI"
+# A copy of this checkout as a repository of its own, so the rule runs against
+# a base and a change without touching this one.
+CI="$T/ci-keel"
+mkdir -p "$CI"
+tar -C "$ROOT" --exclude=.git --exclude=learning/evals/results -cf - . | tar -C "$CI" -xf -
+git -C "$CI" init -q -b main
+mv "$CI/learning/evals/ci-check.sh" "$T/ci-check.sh"
+git -C "$CI" add -A && git -C "$CI" commit -q -m "base, before the rule"
+git -C "$CI" switch -q -c intro
+mv "$T/ci-check.sh" "$CI/learning/evals/ci-check.sh"
+echo "A line." >>"$CI/method/router.md"
+git -C "$CI" add -A && git -C "$CI" commit -q -m "the rule, and a method change"
+check "the change that brings the rule in is not held to it" "$CI/learning/evals/ci-check.sh" main
+git -C "$CI" switch -q main
+git -C "$CI" show intro:learning/evals/ci-check.sh >"$CI/learning/evals/ci-check.sh"
+chmod +x "$CI/learning/evals/ci-check.sh"
+git -C "$CI" add -A && git -C "$CI" commit -q -m "base, with the rule"
+git -C "$CI" switch -q -c change
+ci() { "$CI/learning/evals/ci-check.sh" main; }
+echo "A line." >>"$CI/README.md"
+git -C "$CI" commit -qam "readme"
+check "a change outside method/ and trust/ needs no result" ci
+echo "6. Say what you changed." >>"$CI/method/playbooks/bug-fix.md"
+git -C "$CI" commit -qam "bug-fix step"
+out=$(ci)
+refute "a playbook change with no result fails" ci
+eq "naming only the playbook it reaches" "bug-fix" "$(grep '^FAIL' <<<"$out" | awk '{print $2}' | tr -d ':')"
+mkdir -p "$CI/learning/evals/results"
+printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\n' "0000" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" add -A && git -C "$CI" commit -qm "stale result"
+refute "a result for other method content fails" ci
+printf '# r\n\nmethod-trust: %s\nplaybook: pause\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" commit -qam "result for another playbook"
+refute "a result for another playbook does not count, whatever its file is named" ci
+printf '# r\n\nmethod-trust: %s\nplaybook: bug-fix\n' "$("$CI/learning/evals/content-hash.sh" "$CI")" >"$CI/learning/evals/results/2026-11-04-bug-fix-change.md"
+git -C "$CI" commit -qam "result"
+check "a result naming this content passes" ci
+echo "A line." >>"$CI/method/router.md"
+git -C "$CI" commit -qam "router"
+eq "a change to the router reaches every playbook" "$(for d in "$EV"/*/; do [[ -f "$d/prompt.md" ]] && basename "$d"; done | sort | paste -sd' ')" \
+  "$(ci | grep '^FAIL' | awk '{print $2}' | tr -d ':' | sort | paste -sd' ')"
+
 section "playbooks"
 # The router matches only what the index lists, and copies numbered steps.
 PB="$ROOT/method/playbooks"

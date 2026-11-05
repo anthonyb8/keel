@@ -1,0 +1,4 @@
+- Read the note, the branch's commits and the run before acting.
+- Named the resume point the note gives and redid nothing finished.
+- Checked the inherited claim (the cap works) on the code before building on it.
+- Re-routed the remaining work to the issue playbook.
