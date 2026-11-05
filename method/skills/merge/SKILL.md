@@ -63,9 +63,15 @@ GitHub's names map to `gh` flags as: "Squash and merge" `--squash`, "Create a me
 ## 3. Check the PR is ready
 
 - **Draft:** stop and report; marking it ready is the user's call.
-- **Checks:** `gh pr checks <n>`. Every check must have passed, required or not.
+- **Checks:** `gh pr checks <n> --json name,bucket,event,workflow,link`. Every check must have passed, required or not.
   A pending check is a question: wait, or stop. Waiting is `gh pr checks <n> --watch --fail-fast`, then these checks again.
   A failed or cancelled check stops the merge; report it with its link.
+  A skipped check counts as passed when its workflow skipped it on purpose for this PR, which you show from the workflow file the run used: for a `pull_request` event the merge ref, `git fetch origin pull/<n>/merge` then `git show FETCH_HEAD:.github/workflows/<file>`; for `pull_request_target` the target branch's copy. On purpose means:
+  - the job's own `if:` is false for this PR, worked out from the PR's own facts alone: its event, target and head branch, labels, author and draft state. `if: github.base_ref == 'main'` on a PR into `development` is one.
+  - or every job it `needs:` was itself skipped that way.
+
+  Any other skip is a question: an `if:` that reads `needs`, `vars`, `inputs` or a status function such as `failure()`, a job you cannot find in the workflow file, or a skip with no `if:` behind it.
+  Never ask about a skip you explained; step 4 records it.
 - **Merge state**, `mergeStateStatus`:
   - `CLEAN`, or `HAS_HOOKS`: ready.
   - `BEHIND`: the target has moved on and the branch must catch up. Updating it is a change to the branch, so ask; never run `gh pr update-branch` on your own.
@@ -82,7 +88,7 @@ Before merging, show one short block:
 - the PR, its title, and `head -> target`
 - the method, and the source line that names it
 - each other source and what it said
-- the checks and merge state
+- the checks and merge state, with each skipped check and the `if:` line, file and line number that skipped it, or the skipped job it `needs:`
 - anything the merge will do besides land the commits, such as GitHub deleting the branch because `deleteBranchOnMerge` is on, or the PR closing a Linear issue
 
 When everything was clear this is a record, not a question, and you go on to step 5.
