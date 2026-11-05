@@ -120,6 +120,18 @@ for case in \
   check "and gives the $playbook playbook's first step word for word" grep -qF "$(sed -n 's/^1\. //p' "$ROOT/method/playbooks/$playbook.md")" <<<"$reply"
 done
 
+section "runs"
+# The prompt never names keel run: the router alone must start the run. A
+# routing case above may have recorded one in the same tree; clear it first.
+(cd "$OTHER" && keel run stop stopped >/dev/null 2>&1)
+ask "$OTHER" "Task: the acme app crashes with a TypeError when the cart is empty; fix it."$'\n\n'"Route it as your rules say, then stop before working on any step." \
+  --allowedTools "Bash(keel:*),Bash(printf:*),Bash(cat:*),Write" >/dev/null
+runs=$(keel status --json "$OTHER")
+eq "a routed session leaves a run keel status shows, in its tree" "$OTHER bug-fix" "$(jq -r '.[] | "\(.tree) \(.playbook)"' <<<"$runs")"
+check "with a goal" test -n "$(jq -r '.[0].goal // empty' <<<"$runs")"
+eq "and the bug-fix playbook's steps" "$(sed -n 's/^[0-9]\. //p' "$ROOT/method/playbooks/bug-fix.md")" "$(jq -r '.[0].steps[].title' <<<"$runs")"
+(cd "$OTHER" && keel run stop stopped >/dev/null 2>&1)
+
 echo
 echo "keel-held trees left leased:"
 keel_leases "$ACME" | sed 's/^/  /'

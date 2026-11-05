@@ -23,6 +23,13 @@
 #                               project create|get|update <name> [--summary <s>] [--body <file>]
 #   keel template [name] [dir]
 #                             print the issue or project template that applies in dir; no name lists them
+#   keel run start --playbook <name> --goal <text> --steps <file> [--replace]
+#                             start a run in this tree, recorded under ~/.local/state/keel/runs
+#   keel run step <n> doing|done|skip <reason>
+#   keel run pause            pause the run; a resume note on stdin goes into its folder
+#   keel run stop done|stopped|failed [--note <text>] [--tree <path>]
+#                             end the run and archive it
+#   keel status --json [path] every active or paused run, or the one holding path; docs/status.md
 #   keel stack up [args]      start this tree's stack detached through the pack's stack script,
 #                             wait until it serves, print its URL; args go to the script
 #   keel stack down           stop it
@@ -61,6 +68,9 @@ METHOD_DIR="$KEEL_ROOT/method"
 TEMPLATES_DIR="$KEEL_ROOT/templates"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 KEEP_FILE="${KEEL_KEEP:-$HOME/.config/keel/keep}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/keel"
+RUNS_DIR="$STATE_DIR/runs"
+STALE_FILE="$STATE_DIR/stale"
 
 die() {
   echo "keel: $*" >&2
@@ -225,7 +235,11 @@ pool_entry() {
 # with work in it stays leased so the work can be reviewed. The agent-* branch
 # of a returned tree is deleted, since by then it points at nothing new.
 release_if_empty() {
-  local path="$1" branch
+  local path="$1" branch held
+  if held=$(run_holding "$path"); then
+    echo "kept $path: run $held" >&2
+    return 1
+  fi
   if [[ -n "$(git -C "$path" status --porcelain)" ]]; then
     echo "kept $path: uncommitted changes" >&2
     return 1
@@ -265,12 +279,17 @@ hook_subagent_stop() {
 # `treehouse return` by hand runs no hook and leaves a database behind. A tree
 # on the keep list is never touched. Dry run unless --apply.
 sweep() {
-  local apply=0 entry path
+  local apply=0 entry path held
   [[ "${1:-}" == "--apply" ]] && apply=1
+  refresh_stale
   while IFS= read -r entry; do
     path=$(jq -r .path <<<"$entry")
     if is_kept "$path"; then
       echo "kept $path: on the keep list" >&2
+    elif held=$(run_holding "$path"); then
+      # A stale run is listed but never cleared here: it marks work that
+      # stopped mid-step, which `keel run stop stopped --tree` clears by hand.
+      echo "kept $path: run $held$(grep -qxF "$path" "$STALE_FILE" 2>/dev/null && echo ", stale")"
     elif [[ "$apply" == 1 ]]; then
       release_if_empty "$path" || true
     else
@@ -445,10 +464,14 @@ e2e() {
 }
 
 hook_worktree_remove() {
-  local input path
+  local input path held
   input=$(cat)
   path=$(jq -r '.worktree_path // .path // empty' <<<"$input")
   [[ -n "$path" ]] || die "WorktreeRemove gave no path: $input"
+  if held=$(run_holding "$path"); then
+    echo "kept $path: run $held" >&2
+    return 0
+  fi
   stack_down "$path" >&2
   stack_release "$path"
   treehouse return "$path" >&2
@@ -914,6 +937,226 @@ template_names() {
   done | sort -u
 }
 
+# Runs: every task a playbook routes is a run, recorded outside the tree in
+# $RUNS_DIR/<tree-key>/status.json so a run never shows as work in the tree
+# and never blocks a pool return by accident. docs/status.md is the schema.
+
+# The tree's absolute path with every / and . turned into -, as Claude Code
+# names its project folders: readable, and stable for the tree's life.
+tree_key() {
+  local p="${1%/}"
+  echo "${p//[\/.]/-}"
+}
+
+# The tree a path belongs to: its git toplevel, else the path itself.
+tree_of() {
+  git -C "$1" rev-parse --show-toplevel 2>/dev/null || (cd "$1" && pwd -P)
+}
+
+run_dir() { echo "$RUNS_DIR/$(tree_key "$1")"; }
+
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Writes JSON on stdin to $1 through a temporary file in the same directory
+# and a rename, so a reader polling the file only ever sees a whole one.
+write_atomic() {
+  local tmp
+  tmp=$(mktemp "$(dirname "$1")/.status.XXXXXX")
+  cat >"$tmp" && mv -f "$tmp" "$1"
+}
+
+# Applies a jq filter to the run's status.json, stamping updated_at.
+run_update() { # run_update <run dir> <jq filter> [jq args...]
+  local dir="$1" filter="$2"
+  shift 2
+  jq --arg now "$(now)" "$@" "($filter) | .updated_at = \$now" "$dir/status.json" | write_atomic "$dir/status.json"
+}
+
+# Prints "<playbook> <state> at step <n>" when the tree has an active or
+# paused run, and fails when it has none.
+run_holding() {
+  local dir
+  dir=$(run_dir "$1")
+  [[ -f "$dir/status.json" ]] || return 1
+  jq -er 'select(.state == "active" or .state == "paused")
+    | "\(.playbook) \(.state) at step \(.current // "none")"' "$dir/status.json"
+}
+
+run_start() {
+  local playbook="" goal="" steps="" replace=0 tree branch dir held
+  while (($#)); do
+    case "$1" in
+    --playbook) playbook="${2:-}" && shift 2 ;;
+    --goal) goal="${2:-}" && shift 2 ;;
+    --steps) steps="${2:-}" && shift 2 ;;
+    --replace) replace=1 && shift ;;
+    *) die "usage: keel run start --playbook <name> --goal <text> --steps <file> [--replace]" ;;
+    esac
+  done
+  [[ -n "$playbook" && -n "$goal" ]] || die "run start needs --playbook and --goal"
+  [[ -f "$steps" ]] || die "run start needs --steps <file>, one step per line"
+  tree=$(tree_of "$PWD")
+  dir=$(run_dir "$tree")
+  if held=$(run_holding "$tree"); then
+    [[ "$replace" == 1 ]] || die "run $held already holds $tree; finish it with \`keel run stop\`, or start with --replace"
+    run_archive "$dir" stopped "replaced by a new run"
+  fi
+  branch=$(git -C "$tree" symbolic-ref -q --short HEAD 2>/dev/null || echo "")
+  mkdir -p "$dir"
+  # One step per non-empty line, a leading "1. " or "- " dropped.
+  jq -n --arg tree "$tree" --arg branch "$branch" --arg playbook "$playbook" --arg goal "$goal" \
+    --arg now "$(now)" --rawfile steps "$steps" '{
+      version: 1, tree: $tree, branch: $branch, playbook: $playbook, goal: $goal,
+      state: "active",
+      steps: [$steps | split("\n")[] | sub("^\\s*([0-9]+[.)]|[-*])\\s+"; "") | select(test("\\S"))
+              | {title: ., state: "pending", reason: null}],
+      current: null, started_at: $now, updated_at: $now, stale: false,
+      attention: null, done_check: null, verifier: null, gate: null
+    }' | write_atomic "$dir/status.json"
+  [[ "$(jq '.steps | length' "$dir/status.json")" -gt 0 ]] || {
+    rm -rf "$dir"
+    die "the steps file holds no steps"
+  }
+  echo "run $playbook started in $tree"
+}
+
+# The run's folder for the tree at --tree, else the current tree, when it has
+# an active or paused run.
+held_run_dir() {
+  local tree="$1" dir
+  tree=$(tree_of "${tree:-$PWD}")
+  dir=$(run_dir "$tree")
+  run_holding "$tree" >/dev/null || die "no active run in $tree"
+  echo "$dir"
+}
+
+run_step() {
+  local n="${1:-}" state="${2:-}" reason="${3:-}" dir count
+  [[ "$n" =~ ^[0-9]+$ ]] || die "usage: keel run step <n> doing|done|skip <reason>"
+  case "$state" in
+  doing | done) [[ -z "$reason" ]] || die "only skip takes a reason" ;;
+  skip) [[ -n "$reason" ]] || die "a skipped step needs its reason: keel run step $n skip <reason>" ;;
+  *) die "usage: keel run step <n> doing|done|skip <reason>" ;;
+  esac
+  dir=$(held_run_dir "") || exit 1
+  count=$(jq '.steps | length' "$dir/status.json")
+  ((n >= 1 && n <= count)) || die "the run has steps 1 to $count"
+  # A step being worked on is the current one; finishing or skipping it moves
+  # current to the first step still open. Touching a paused run resumes it.
+  run_update "$dir" '
+    .state = "active"
+    | .steps[$i].state = (if $s == "skip" then "skipped" else $s end)
+    | .steps[$i].reason = (if $s == "skip" then $r else null end)
+    | .current = (if $s == "doing" then $i + 1
+        else ([.steps | to_entries[] | select(.value.state == "pending" or .value.state == "doing") | .key + 1] | first) end)' \
+    --argjson i "$((n - 1))" --arg s "$state" --arg r "$reason"
+}
+
+# Moves a run's folder to the archive, ended, so status no longer lists it.
+run_archive() { # run_archive <run dir> <state> <note>
+  local dir="$1" state="$2" note="$3" started dest
+  run_update "$dir" '.state = $s | .note = (if $n == "" then null else $n end) | .ended_at = .updated_at' \
+    --arg s "$state" --arg n "$note"
+  started=$(jq -r .started_at "$dir/status.json")
+  dest="$RUNS_DIR/archive/$(basename "$dir")/$started"
+  # Two runs can start in the same second, as with --replace; neither archive
+  # may overwrite the other.
+  while [[ -e "$dest" ]]; do dest="$dest+"; done
+  mkdir -p "$(dirname "$dest")"
+  mv "$dir" "$dest"
+}
+
+run_stop() {
+  local state="${1:-}" note="" tree="" dir
+  case "$state" in
+  done | stopped | failed) shift ;;
+  *) die "usage: keel run stop done|stopped|failed [--note <text>] [--tree <path>]" ;;
+  esac
+  while (($#)); do
+    case "$1" in
+    --note) note="${2:-}" && shift 2 ;;
+    --tree) tree="${2:-}" && shift 2 ;;
+    *) die "usage: keel run stop done|stopped|failed [--note <text>] [--tree <path>]" ;;
+    esac
+  done
+  dir=$(held_run_dir "$tree") || exit 1
+  run_archive "$dir" "$state" "$note"
+  echo "run $state; archived"
+}
+
+# Pauses the run; a resume note on stdin, when given, goes into its folder.
+run_pause() {
+  local dir
+  dir=$(held_run_dir "") || exit 1
+  if [[ ! -t 0 ]]; then
+    cat >"$dir/resume.md.tmp" && mv -f "$dir/resume.md.tmp" "$dir/resume.md"
+    [[ -s "$dir/resume.md" ]] || rm -f "$dir/resume.md"
+  fi
+  run_update "$dir" '.state = "paused"'
+  echo "run paused; folder $dir"
+}
+
+run() {
+  local verb="${1:-}"
+  shift || true
+  mkdir -p "$RUNS_DIR"
+  case "$verb" in
+  start) run_start "$@" ;;
+  step) run_step "$@" ;;
+  stop) run_stop "$@" ;;
+  pause) run_pause "$@" ;;
+  dir) held_run_dir "${1:-}" ;;
+  *) die "usage: keel run start|step|stop|pause|dir ..." ;;
+  esac
+}
+
+# Prints every active or paused run, or the one holding path, as a JSON array.
+# Reads files only, never git or treehouse, so treetop can poll it: staleness
+# comes from the cache `keel sweep` refreshes.
+status() {
+  local json=0 path=""
+  while (($#)); do
+    case "$1" in
+    --json) json=1 && shift ;;
+    *) path="$1" && shift ;;
+    esac
+  done
+  [[ "$json" == 1 ]] || die "usage: keel status --json [path]"
+  local files=("$RUNS_DIR"/*/status.json)
+  if [[ ! -e "${files[0]}" ]]; then
+    echo "[]"
+    return
+  fi
+  if [[ -n "$path" ]]; then
+    path=$(cd "$path" 2>/dev/null && pwd -P) || die "no such directory: $path"
+  fi
+  [[ -f "$STALE_FILE" ]] || STALE_FILE=/dev/null
+  jq -n --arg path "$path" --rawfile stale "$STALE_FILE" '
+    ($stale | split("\n") | map(select(. != ""))) as $stale
+    | [inputs
+       | select(.state == "active" or .state == "paused")
+       | .stale = (.state == "active" and (.tree as $t | $stale | index($t) != null))
+       | select(.tree as $t | $path == "" or $path == $t or ($path | startswith($t + "/")))]' \
+    "${files[@]}"
+}
+
+# Rewrites the stale cache for this pool: an active run is stale when its tree
+# is leased with no live process in it, which treehouse records.
+refresh_stale() {
+  local pool kept
+  pool=$(treehouse status --json 2>/dev/null) || return 0
+  mkdir -p "$(dirname "$STALE_FILE")"
+  touch "$STALE_FILE"
+  kept=$(grep -vxFf <(jq -r '.[].path' <<<"$pool") "$STALE_FILE" || true)
+  {
+    [[ -n "$kept" ]] && echo "$kept"
+    jq -r '.[] | select(.status == "leased" and (.processes | length == 0)) | .path' <<<"$pool" |
+      while IFS= read -r p; do
+        if [[ "$(jq -r .state "$(run_dir "$p")/status.json" 2>/dev/null)" == active ]]; then echo "$p"; fi
+      done
+  } | write_atomic "$STALE_FILE"
+}
+
 cmd="${1:-}"
 [[ -n "$cmd" ]] || {
   usage >&2
@@ -928,6 +1171,8 @@ base) base_for "${1:-$PWD}" ;;
 protected) protected_for "${1:-$PWD}" ;;
 provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
+run) run "$@" ;;
+status) status "$@" ;;
 gate) gate "$@" ;;
 linear) linear "$@" ;;
 template)

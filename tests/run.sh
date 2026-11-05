@@ -535,6 +535,99 @@ trap 'rm -rf "$T"' EXIT
 unset KEEL_LINEAR_URL LINEAR_KEY_ACME LINEAR_KEY_OTHER
 rm "$PACK/linear"
 
+section "runs"
+RUNS="$HOME/.local/state/keel/runs"
+printf '1. Reproduce it.\n2. Narrow the cause.\n\n- Fix it at the root.\n' >"$T/steps.md"
+R1=$(create "$ACME" feature/run-1)
+in_r1() { (cd "$R1" && "$K" "$@"); }
+st() { (cd "$R1" && "$K" status --json .) | jq -rc "$1"; } # st <jq filter on the array>
+eq "a tree with no run has an empty status" "[]" "$(in_r1 status --json .)"
+in_r1 run start --playbook bug-fix --goal "The cart survives being empty." --steps "$T/steps.md" >/dev/null
+eq "start records the run under the tree's key" "$R1" "$(jq -r .tree "$RUNS/${R1//[\/.]/-}/status.json")"
+eq "status lists it with its playbook, goal, branch and state" '["bug-fix","The cart survives being empty.","feature/run-1","active"]' \
+  "$(st '.[0] | [.playbook, .goal, .branch, .state]')"
+eq "with the steps from the file, numbering and bullets dropped" '["Reproduce it.","Narrow the cause.","Fix it at the root."]' "$(st '[.[0].steps[].title]')"
+# The schema in docs/status.md: every field present, with its type. A missing
+# key reads as null in jq, so presence is checked by name.
+eq "status follows docs/status.md version 1" "true" "$(st '.[0] | (["version","tree","branch","playbook","goal","state",
+    "steps","current","started_at","updated_at","stale","attention","done_check","verifier","gate"] - keys) == []
+  and .version == 1
+  and (.tree|type) == "string" and (.branch|type) == "string" and (.playbook|type) == "string"
+  and (.goal|type) == "string" and (.state|IN("active","paused","done","stopped","failed"))
+  and (.steps|type) == "array" and all(.steps[]; (.title|type) == "string" and (.state|IN("pending","doing","done","skipped")) and has("reason"))
+  and (.current == null or (.current|type) == "number")
+  and all(.started_at, .updated_at; test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and (.stale|type) == "boolean"
+  and .attention == null and .done_check == null and .verifier == null and .gate == null')"
+refute "a second run in the same tree is refused" in_r1 run start --playbook issue --goal g --steps "$T/steps.md"
+in_r1 run step 1 doing
+eq "a step being worked on is the current one" "1 doing" "$(st '.[0] | "\(.current) \(.steps[0].state)"')"
+in_r1 run step 1 "done"
+eq "finishing it moves current to the next open step" "2" "$(st '.[0].current')"
+refute "a skip needs its reason" in_r1 run step 2 skip
+refute "a step past the last is refused" in_r1 run step 9 doing
+in_r1 run step 2 skip "the repro already names the cause"
+eq "a skipped step keeps its reason" '["skipped","the repro already names the cause"]' "$(st '.[0].steps[1] | [.state, .reason]')"
+eq "and current moves past it" "3" "$(st '.[0].current')"
+eq "status for a path inside the tree finds its run" "bug-fix" "$(mkdir -p "$R1/src" && cd "$R1/src" && "$K" status --json . | jq -r '.[0].playbook')"
+eq "status for another tree lists nothing" "[]" "$("$K" status --json "$OTHER")"
+eq "status with no path lists every run" "1" "$("$K" status --json | jq length)"
+
+section "runs keep their trees"
+listed=$(cd "$ACME" && $K sweep 2>&1)
+check "a dry sweep names the run holding the tree" grep -qxF "kept $R1: run bug-fix active at step 3, stale" <<<"$listed"
+swept=$(cd "$ACME" && $K sweep --apply 2>&1)
+eq "sweep keeps a clean tree whose run is active" "leased" "$(lease_status "$ACME" "$R1")"
+check "and says which run holds it" grep -qF "kept $R1: run bug-fix active at step 3" <<<"$swept"
+eq "and marks the run stale, since nothing runs in its tree" "true" "$(st '.[0].stale')"
+jq -n --arg p "$R1" '{hook_event_name:"WorktreeRemove",worktree_path:$p}' | $K hook worktree-remove >/dev/null 2>&1
+eq "WorktreeRemove keeps a tree whose run is active" "leased" "$(lease_status "$ACME" "$R1")"
+A2=$(create "$ACME" agent-fff666)
+(cd "$A2" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null)
+stop "$A2" fff666
+eq "SubagentStop keeps its tree while the run is active" "leased" "$(lease_status "$ACME" "$A2")"
+(cd "$A2" && "$K" run stop "done" >/dev/null)
+stop "$A2" fff666
+eq "and returns it once the run has ended" "available" "$(lease_status "$ACME" "$A2")"
+
+printf 'Goal: the cart.\nNext: write the regression test.\n' | in_r1 run pause >/dev/null
+eq "pause sets the run to paused" "paused" "$(st '.[0].state')"
+eq "with the resume note in its folder" "Next: write the regression test." "$(tail -1 "$(in_r1 run dir)/resume.md")"
+eq "a paused run is not stale" "false" "$(st '.[0].stale')"
+(cd "$ACME" && $K sweep --apply >/dev/null 2>&1)
+eq "sweep keeps a tree whose run is paused" "leased" "$(lease_status "$ACME" "$R1")"
+in_r1 run step 3 doing
+eq "moving a step resumes a paused run" "active" "$(st '.[0].state')"
+
+in_r1 run start --playbook issue --goal "Another goal." --steps "$T/steps.md" --replace >/dev/null
+eq "--replace starts the new run" "issue" "$(st '.[0].playbook')"
+eq "and archives the old one as stopped" "stopped replaced by a new run" \
+  "$(jq -r 'select(.note == "replaced by a new run") | "\(.state) \(.note)"' "$RUNS"/archive/*/*/status.json)"
+(cd "$ACME" && "$K" run stop stopped --tree "$R1" --note "cleared by hand" >/dev/null)
+eq "stop --tree ends a run from outside its tree" "[]" "$(in_r1 status --json .)"
+eq "and archives it with its state and note" "stopped" "$(jq -r 'select(.note == "cleared by hand") | .state' "$RUNS"/archive/*/*/status.json)"
+(cd "$ACME" && $K sweep --apply >/dev/null 2>&1)
+eq "with the run ended, sweep returns the clean tree" "available" "$(lease_status "$ACME" "$R1")"
+
+(cd "$ACME" && "$K" run start --playbook investigation --goal g --steps "$T/steps.md" >/dev/null)
+eq "a run starts in a repository's main checkout too" "$ACME" "$("$K" status --json "$ACME" | jq -r '.[0].tree')"
+# An archive already holding a run that started in the same second.
+key=${ACME//[\/.]/-}
+mkdir -p "$RUNS/archive/$key/$(jq -r .started_at "$RUNS/$key/status.json")"
+(cd "$ACME" && "$K" run stop "done" >/dev/null)
+eq "ending it never overwrites a run archived in the same second" "2" "$(find "$RUNS/archive/$key" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+
+section "runs are written whole"
+R2=$(create "$ACME" feature/run-2)
+(cd "$R2" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null)
+f="$RUNS/${R2//[\/.]/-}/status.json"
+(for _ in {1..60}; do (cd "$R2" && "$K" run step 1 doing && "$K" run step 1 "done") >/dev/null; done) &
+writer=$!
+torn=0
+while kill -0 "$writer" 2>/dev/null; do jq -e .steps "$f" >/dev/null 2>&1 || torn=$((torn + 1)); done
+wait "$writer"
+eq "a reader polling during writes never sees a partial file" "0" "$torn"
+(cd "$R2" && "$K" run stop "done" >/dev/null)
+
 section "playbooks"
 # The router matches only what the index lists, and copies numbered steps.
 PB="$ROOT/method/playbooks"
