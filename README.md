@@ -24,6 +24,9 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
 
 ## What it does
 
+- **Router.** Every keel session gets a short router at session start: the first reply to a task restates the goal, names the playbook it matched (or says no playbook fits), and opens the todo list with that playbook's steps word for word, a skipped step staying on the list as `skip: <reason>`.
+  `/keel <task>` forces a fresh match. Playbooks live in `method/playbooks/`, indexed in its `README.md`; subagents get no router and follow their brief.
+- **Skills.** `/pickup ABC-123` runs the `issue` playbook through the ported chain: `/audit-issue`, `/implement`, `/write-tests`, `/audit-tests` in a fresh `keel-agent`, `/e2e`, then `/ship` and `/merge` on the user's ask. `/spec` files issues from `keel template issue` or `keel template project`, a pack's template winning by name.
 - **Trees.** In a keel session, `EnterWorktree`, `claude --worktree` and subagents with worktree isolation lease a pool tree from treehouse, on a named branch off the pack's base.
   keel holds its trees as `keel:<branch>` and `keel:agent-<id>`, harness as `claude:...`, so neither system's sweep or stop hook ever returns the other's tree.
   A subagent's empty tree goes back to the pool when it stops; `keel sweep --apply` catches the rest, except trees listed in `~/.config/keel/keep`.
@@ -56,10 +59,10 @@ Each directory is created by the row that first puts something in it.
 ```
 rules/       CLAUDE.md, OPINIONS.md, VOICE.md
 rails/       bin/keel, settings.json and its hooks, lib/ (git-guard.py, sockrelay.mjs), shell/keel.zsh
-method/      the mode, playbooks, skills and agents
+method/      router.md, playbooks/, skills/ and agents/keel-agent.md, linked into ~/.keel
 trust/       the contract, its hooks and skills
 learning/    reflect and evals
-templates/   issue and project templates
+templates/   issue and project templates, for keel template
 docs/        how each part works
 tests/       run.sh for the logic, against a throwaway HOME
 ```
@@ -68,6 +71,7 @@ tests/       run.sh for the logic, against a throwaway HOME
 
 ```sh
 tests/run.sh          # the logic, against throwaway repos, pools, packs and a stub Linear under a throwaway HOME; no Claude calls
+tests/sessions.sh     # real Haiku sessions through the hooks and the router; needs keel's /login, run by hand
 tests/linear-live.sh  # read-only checks against the real Linear workspaces; needs both API keys, kept out of CI
 ```
 

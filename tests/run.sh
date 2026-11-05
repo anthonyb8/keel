@@ -35,8 +35,8 @@ section "install"
 seed_harness
 before=$(snapshot_harness)
 out=$("$ROOT/install.sh")
-eq "install writes only under ~/.keel/claude and ~/.local/bin/keel" "" \
-  "$(grep -v -e "^linked   $HOME/.keel/claude/" -e "^linked   $HOME/.local/bin/keel\$" <<<"$out")"
+eq "install writes only under ~/.keel and ~/.local/bin/keel" "" \
+  "$(grep -v -e "^linked   $HOME/.keel/" -e "^linked   $HOME/.local/bin/keel\$" <<<"$out")"
 eq "running install again changes nothing" "" "$("$ROOT/install.sh")"
 check "--check is clean after install" "$ROOT/install.sh" --check
 check "settings.json is valid JSON, or Claude Code would drop every permission" jq empty "$HOME/.keel/claude/settings.json"
@@ -53,6 +53,16 @@ refute "--check fails on a removed link" "$ROOT/install.sh" --check
 check "and names it MISSING" grep -qx "MISSING: $HOME/.keel/claude/CLAUDE.md" <<<"$out"
 "$ROOT/install.sh" >/dev/null
 eq "install puts it back" "$ROOT/rules/CLAUDE.md" "$(readlink "$HOME/.keel/claude/CLAUDE.md")"
+eq "install links every skill in method/skills" "$(cd "$ROOT/method/skills" && ls)" "$(cd "$HOME/.keel/claude/skills" && ls)"
+eq "each to its directory in the repository" "$ROOT/method/skills/spec" "$(readlink "$HOME/.keel/claude/skills/spec")"
+eq "and the keel-agent subagent" "$ROOT/method/agents/keel-agent.md" "$(readlink "$HOME/.keel/claude/agents/keel-agent.md")"
+check "and method/, where the router and skills read playbooks by an absolute path" test -f "$HOME/.keel/method/playbooks/issue.md"
+ln -s "$T/gone" "$HOME/.keel/claude/skills/gone"
+out=$("$ROOT/install.sh" --check)
+refute "--check fails on a skill gone from the repository" "$ROOT/install.sh" --check
+check "and names it DANGLING" grep -qx "DANGLING: $HOME/.keel/claude/skills/gone" <<<"$out"
+"$ROOT/install.sh" >/dev/null
+check "and install removes its link" test ! -L "$HOME/.keel/claude/skills/gone"
 echo stale >"$HOME/.keel/claude/VOICE.md.tmp" && mv "$HOME/.keel/claude/VOICE.md.tmp" "$HOME/.keel/claude/VOICE.md"
 "$ROOT/install.sh" >/dev/null
 eq "a link replaced with a file is relinked" "$ROOT/rules/VOICE.md" "$(readlink "$HOME/.keel/claude/VOICE.md")"
@@ -80,6 +90,18 @@ eq "the base, the default branch and the pack's list are protected" "$(printf 'd
 eq "a repo without the pack's list protects its default" "main" "$($K protected "$OTHER")"
 rm "$PACK/protected"
 
+section "templates"
+mkdir -p "$PACK/templates"
+{ cat "$ROOT/templates/issue.md"; printf '\n## Acme review\n'; } >"$PACK/templates/issue.md"
+echo "# Acme RFC" >"$PACK/templates/rfc.md"
+eq "with no pack the core's template prints" "$(cat "$ROOT/templates/issue.md")" "$($K template issue "$OTHER")"
+eq "a pack's template replaces the core's" "$(cat "$PACK/templates/issue.md")" "$($K template issue "$ACME")"
+eq "a template the pack lacks falls back to the core's" "$(cat "$ROOT/templates/project.md")" "$($K template project "$ACME")"
+eq "no name lists the core's templates and the pack's, once each" "$(printf 'issue\nproject\nrfc')" "$(cd "$ACME" && $K template)"
+refute "an unknown template fails" "$K" template nope "$ACME"
+refute "a path is not a template name, even one that resolves to a template" "$K" template ../templates/issue "$ACME"
+rm -r "$PACK/templates"
+
 section "context hook"
 out=$(jq -n --arg c "$ACME" '{hook_event_name:"SessionStart",source:"startup",cwd:$c}' | $K hook context)
 ctx=$(jq -r .hookSpecificOutput.additionalContext <<<"$out")
@@ -89,8 +111,14 @@ check "and points at keel's CLAUDE.md, not harness's" grep -qF "~/.keel/claude/C
 eq "SessionStart output names its event" "SessionStart" "$(jq -r .hookSpecificOutput.hookEventName <<<"$out")"
 out=$(jq -n --arg c "$ACME" '{hook_event_name:"SubagentStart",cwd:$c}' | $K hook context)
 eq "SubagentStart output names its event" "SubagentStart" "$(jq -r .hookSpecificOutput.hookEventName <<<"$out")"
+sub=$(jq -r .hookSpecificOutput.additionalContext <<<"$out")
+check "a subagent gets the pack's rules too" grep -q "ACME RULE" <<<"$sub"
+refute "but not the router, so it never routes a task of its own" grep -qF "$(head -1 "$ROOT/method/router.md")" <<<"$sub"
+check "it is told to follow its brief instead" grep -q "follow your brief" <<<"$sub"
+router=$(cat "$ROOT/method/router.md")
+check "a main session gets the router, whole" test "${ctx#*"$router"}" != "$ctx"
 out=$(jq -n --arg c "$OTHER" '{hook_event_name:"SessionStart",source:"startup",cwd:$c}' | $K hook context)
-eq "an unowned repo gets no output" "" "$out"
+eq "an unowned repo gets the router and no pack rules" "$(cat "$ROOT/method/router.md")" "$(jq -r .hookSpecificOutput.additionalContext <<<"$out")"
 
 create() { # create <repo> <name>
   jq -n --arg c "$1" --arg n "$2" '{hook_event_name:"WorktreeCreate",cwd:$c,name:$n}' | $K hook worktree-create 2>/dev/null
@@ -117,7 +145,7 @@ eq "the same name again resumes the same tree" "$P" "$P2"
 eq "resuming leases nothing new" "1" "$( (cd "$ACME" && treehouse status --json) | jq '[.[] | select(.status == "leased")] | length')"
 
 Q=$(create "$OTHER" feature/plain)
-eq "with no pack the tree is cut from the default branch" "$MAIN" "$(git -C "$Q" rev-parse HEAD)"
+eq "with no pack the tree is cut from the default branch" "$(git -C "$OTHER" rev-parse origin/main)" "$(git -C "$Q" rev-parse HEAD)"
 S=$(create "$SITE" feature/site-1)
 eq "a pack repo without the pack's base leases off its default" "$(git -C "$SITE" rev-parse origin/main)" "$(git -C "$S" rev-parse HEAD)"
 
@@ -506,6 +534,17 @@ wait "$LINEAR_STUB" 2>/dev/null
 trap 'rm -rf "$T"' EXIT
 unset KEEL_LINEAR_URL LINEAR_KEY_ACME LINEAR_KEY_OTHER
 rm "$PACK/linear"
+
+section "playbooks"
+# The router matches only what the index lists, and copies numbered steps.
+PB="$ROOT/method/playbooks"
+eq "the index lists every playbook, and only those that exist" \
+  "$(for f in "$PB"/*.md; do [[ "$f" == */README.md ]] || basename "$f" .md; done | sort)" \
+  "$(grep -o '^| \[[a-z-]*\]([a-z-]*\.md)' "$PB/README.md" | sed 's/.*(\(.*\)\.md)/\1/' | sort)"
+for f in "$PB"/*.md; do
+  [[ "$(basename "$f")" == README.md ]] && continue
+  check "$(basename "$f" .md) has numbered steps starting at 1" grep -q '^1\. ' "$f"
+done
 
 section "isolation"
 eq "harness paths are byte for byte unchanged after every keel command above" "$before" "$(snapshot_harness)"

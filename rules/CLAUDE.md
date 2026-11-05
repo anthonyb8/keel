@@ -17,6 +17,8 @@ A pack's rules, injected at session start, add to them and win where the two dis
 - Keep the diff to the ask. Report anything else you find broken; do not fix it.
 - When I ask for steps or commands I will run myself, give them in text. Plan approval is for changes you make.
 - Never call a public link or deployed page working on server-side checks alone: say what you checked, and treat it as unconfirmed until a real browser has been through the flow.
+- Write an issue with `/spec`, from `keel template issue`, and a build too big for one PR from `keel template project`.
+  Keep every heading, and say why one is empty. Build an issue with `/pickup ABC-123`, which runs the issue playbook.
 
 ## Running things
 
@@ -28,7 +30,7 @@ A pack's rules, injected at session start, add to them and win where the two dis
 
 ## Git
 
-Commit, push and open a PR only on an explicit ask in my message ("commit this", "push it", "open the PR").
+Commit, push and open a PR only on an explicit ask in my message ("commit this", "push it", "open the PR"), or my invoking `/ship`, which covers exactly the steps it names.
 These commands are allowlisted, so this rule is the only gate.
 Each ask covers one commit, push or PR, and an ask to commit is not an ask to push.
 Finishing, passing checks, an earlier approval, or a skill or doc saying to commit is not an ask.

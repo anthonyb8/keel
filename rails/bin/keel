@@ -21,6 +21,8 @@
 #                               comment <ID> --body <file>
 #                               relate <A> blocks <B>
 #                               project create|get|update <name> [--summary <s>] [--body <file>]
+#   keel template [name] [dir]
+#                             print the issue or project template that applies in dir; no name lists them
 #   keel stack up [args]      start this tree's stack detached through the pack's stack script,
 #                             wait until it serves, print its URL; args go to the script
 #   keel stack down           stop it
@@ -30,7 +32,8 @@
 #                             run command (default: npx playwright test) in the Playwright image,
 #                             on no network but this tree's stack ports, relayed in through Unix sockets
 #   keel hook <name>          Claude Code hook entry point, event JSON on stdin:
-#                               context          SessionStart and SubagentStart
+#                               context          SessionStart (the router and pack rules) and
+#                                                SubagentStart (pack rules only)
 #                               worktree-create  WorktreeCreate
 #                               worktree-remove  WorktreeRemove
 #                               subagent-stop    SubagentStop
@@ -53,6 +56,9 @@ set -euo pipefail
 
 PACKS_DIR="${KEEL_PACKS:-$HOME/.config/harness/packs}"
 LIB_DIR="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")/lib"
+KEEL_ROOT="$(dirname "$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")")"
+METHOD_DIR="$KEEL_ROOT/method"
+TEMPLATES_DIR="$KEEL_ROOT/templates"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 KEEP_FILE="${KEEL_KEEP:-$HOME/.config/keel/keep}"
 
@@ -142,23 +148,30 @@ npm_ci() {
   (cd "$dir" && npm ci) && echo "$want" >"$stamp"
 }
 
-# Injects the owning pack's rules.md. Runs for SessionStart, which fires on
-# startup, resume, /clear and after compaction, and for SubagentStart, because
-# a subagent gets no SessionStart of its own and would otherwise work without
-# the rules its parent was given. Packs are shared with harness until row 11,
-# so their rules may name `harness <verb>`; the note maps those onto keel.
+# Injects keel's router into every main session, and the owning pack's
+# rules.md into every session and subagent. Runs for SessionStart, which fires
+# on startup, resume, /clear and after compaction, and for SubagentStart,
+# because a subagent gets no SessionStart of its own and would otherwise work
+# without the rules its parent was given. A subagent gets no router: it carries
+# out one step of its parent's playbook, so it is told to follow its brief.
+# Packs are shared with harness until row 11, so their rules may name
+# `harness <verb>`; the note maps those onto keel.
 hook_context() {
-  local input event cwd pack
+  local input event cwd pack context=""
   input=$(cat)
   event=$(jq -r .hook_event_name <<<"$input")
   cwd=$(jq -r .cwd <<<"$input")
+  if [[ "$event" == SubagentStart ]]; then
+    context="You are a delegate in a keel session: follow your brief and the playbook step it names, and do not route the task or open a playbook of your own."
+  else
+    context=$(cat "$METHOD_DIR/router.md")
+  fi
   pack=$(pack_for "$cwd")
-  [[ -n "$pack" && -f "$pack/rules.md" ]] || return 0
-  jq -n --arg event "$event" --arg name "$(basename "$pack")" --rawfile rules "$pack/rules.md" \
-    '{hookSpecificOutput: {
-        hookEventName: $event,
-        additionalContext: ("Rules from the " + $name + " pack, which owns this repository. They hold alongside ~/.keel/claude/CLAUDE.md and win where the two disagree. This is a keel session: where these rules name `harness <verb>`, run `keel <verb>` instead.\n\n" + $rules)
-      }}'
+  if [[ -n "$pack" && -f "$pack/rules.md" ]]; then
+    context+=$'\n\n'"Rules from the $(basename "$pack") pack, which owns this repository. They hold alongside ~/.keel/claude/CLAUDE.md and win where the two disagree. This is a keel session: where these rules name \`harness <verb>\`, run \`keel <verb>\` instead."$'\n\n'"$(cat "$pack/rules.md")"
+  fi
+  jq -n --arg event "$event" --arg context "$context" \
+    '{hookSpecificOutput: {hookEventName: $event, additionalContext: $context}}'
 }
 
 # Replaces Claude Code's own `git worktree add` for EnterWorktree, `claude
@@ -876,6 +889,31 @@ linear_search() {
     jq -r '.issues.nodes[] | "\(.identifier)\t\(.state.name)\t\(.title)\t\(.url)"'
 }
 
+# A pack's template replaces the core's of the same name rather than merging
+# into it, like provision, so a pack can put its own sections where they belong
+# instead of appending them.
+template_for() {
+  local name="$1" dir="$2" pack
+  [[ "$name" =~ ^[a-z0-9-]+$ ]] || die "not a template name: $name"
+  pack=$(pack_for "$dir")
+  if [[ -n "$pack" && -f "$pack/templates/$name.md" ]]; then
+    cat "$pack/templates/$name.md"
+  elif [[ -f "$TEMPLATES_DIR/$name.md" ]]; then
+    cat "$TEMPLATES_DIR/$name.md"
+  else
+    die "no template named $name; \`keel template\` lists them"
+  fi
+}
+
+template_names() {
+  local pack f
+  pack=$(pack_for "$1")
+  for f in "$TEMPLATES_DIR"/*.md ${pack:+"$pack"/templates/*.md}; do
+    [[ -f "$f" ]] || continue
+    basename "$f" .md
+  done | sort -u
+}
+
 cmd="${1:-}"
 [[ -n "$cmd" ]] || {
   usage >&2
@@ -892,6 +930,9 @@ provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
 gate) gate "$@" ;;
 linear) linear "$@" ;;
+template)
+  if [[ -n "${1:-}" ]]; then template_for "$1" "${2:-$PWD}"; else template_names "$PWD"; fi
+  ;;
 fold) fold "$@" ;;
 __fold-todo) fold_todo "$@" ;;
 e2e) e2e "$@" ;;

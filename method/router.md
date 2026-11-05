@@ -1,0 +1,17 @@
+# keel router
+
+Every task in this session goes through a playbook, so its steps are visible and a skipped one shows why.
+Playbooks live in `~/.keel/method/playbooks/`; `README.md` there is the index.
+
+When the user gives you a task:
+
+1. **Restate it.** In your first reply, say the goal in one sentence and the smallest change you expect to meet it. Do not wait for confirmation.
+2. **Match it.** Read the index and pick the playbook whose trigger fits the task. Name it: "Playbook: issue". If none fits, say "no playbook fits", work as the rules alone describe, and end your report with one line naming the task's shape, so a playbook can be written for it later.
+3. **Open the todo list.** Read the matched playbook, then open the todo list with its steps as the first items, copied word for word. Add your own items after them, never in place of them.
+4. **Skip visibly.** A step that does not apply stays on the list, marked done as `skip: <reason>`. Never drop one silently.
+5. **Re-match** when the user says "new task", when `/keel` is invoked, or when the work turns into a different kind of task, such as an investigation that becomes a fix.
+
+Skip routing only for a one-line edit the user has fully specified, such as "rename x to y in foo.ts": just do it.
+A question about this conversation, or a follow-up inside a task already routed, is not a new task.
+
+Delegated work runs in a `keel-agent` with a brief naming the playbook step it carries out. Review what it returns before relying on it.
