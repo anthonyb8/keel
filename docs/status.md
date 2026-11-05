@@ -44,6 +44,12 @@ An archived run also has `ended_at` and `note`.
 - `keel run pause` pauses the run; a resume note on stdin is kept in its folder as `resume.md`.
 - `keel run stop done|stopped|failed [--note <text>] [--tree <path>]` ends the run and archives it.
 
+## Verdicts outside a run
+
+The SubagentStop hook records every `keel-verifier`'s verdict for its tree, run or no run, in `~/.local/state/keel/verdicts/<tree-key>.json`: `{verdict, tree, path, at, findings}`, with `tree` the `HEAD^{tree}` it judged and `path` the tree's absolute path.
+`keel verdict` in a tree prints the last one and passes only when it is a pass on the code at HEAD; `keel verdict --json` prints the record.
+`/ship` reads it before a push, so the session that did the work never reports its own pass.
+
 ## What a run holds
 
 While a run is active or paused, `keel sweep`, SubagentStop and WorktreeRemove keep its tree, saying `kept <path>: run <playbook> <state> at step <n>`.

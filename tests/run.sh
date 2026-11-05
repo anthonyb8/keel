@@ -741,6 +741,25 @@ eq "only a keel-verifier's verdict is recorded" "fail" "$(gst '.[0].verifier.ver
 (cd "$GR" && "$K" run stop stopped >/dev/null)
 eq "once the run ends, a push behaves as outside a run" "" "$(guard_why "$PUSH")"
 
+# Outside a run the verdict is still recorded by the hook, so /ship reads it
+# from `keel verdict` rather than from the session that did the work.
+vd() { (cd "$GR" && "$K" verdict 2>&1); }
+verifier_says $'Ran the tests.\nVERDICT: pass'
+eq "outside a run, keel verdict passes on the code the verifier passed" "pass" "$(vd | head -1)"
+check "and exits 0" bash -c "cd '$GR' && '$K' verdict >/dev/null"
+eq "with --json it prints the record" "pass $(git -C "$GR" rev-parse 'HEAD^{tree}')" "$(cd "$GR" && "$K" verdict --json | jq -r '"\(.verdict) \(.tree)"')"
+echo again >"$GR/changed" && git -C "$GR" commit -q -am "newer code"
+check "a change to the code fails it" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"
+check "and says to verify again" grep -q "/verify again" <<<"$(vd)"
+verifier_says $'VERDICT: fail\nthe parser drops the last row'
+check "a failing verdict fails it" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"
+check "and shows the findings" grep -q "the parser drops the last row" <<<"$(vd)"
+jq -n --arg c "$GR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"x",agent_type:"keel-agent",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
+check "outside a run too, only a keel-verifier's verdict is recorded" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"
+NV="$T/work/acme/never-verified"
+git clone -q "$T/remotes/acme/app" "$NV"
+check "a tree no verifier has judged fails it" grep -q "no verifier has judged" <<<"$(cd "$NV" && "$K" verdict 2>&1)"
+
 section "reflect"
 # Recorded synthesizer output: findings at three levels, out of order, and
 # four that are rejected for what they lack.
