@@ -9,6 +9,7 @@ The router reads this index to match a task, then reads only the matched playboo
 | [investigation](investigation.md) | a question to answer about the code, its history or a choice between options, with nothing to change yet |
 | [babysit-pr](babysit-pr.md) | an open pull request to get green or merge-ready, such as "get #123 green" or "answer the review on #123" |
 | [pause](pause.md) | stopping mid-task so another session can resume, such as "pause here" or a treetop handoff request |
+| [autonomous-run](autonomous-run.md) | work the user wants done unattended, such as "do this overnight" or "run this on your own and open a draft PR" |
 | [pickup](pickup.md) | resuming another session's work in this tree, such as "pick up where the last session stopped" |
 
 ## Format

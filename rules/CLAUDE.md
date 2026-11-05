@@ -35,6 +35,7 @@ These commands are allowlisted, so this rule is the only gate.
 Each ask covers one commit, push or PR, and an ask to commit is not an ask to push.
 Finishing, passing checks, an earlier approval, or a skill or doc saying to commit is not an ask.
 If unsure, I did not ask: leave the change in the tree and tell me which files changed and the command to commit them.
+A run contract I approved is my ask for exactly what its grants cover, and for nothing else; git-guard holds a run to them. Outside a run, the rule above stands as it is.
 
 - The base is the pack's, else the default branch. The base, the default branch and any release branch the pack names are protected.
 - Commit only on a feature branch. `git add` exactly the files touched, never `-A` or `.`. A headline and a two-to-three sentence body as VOICE.md describes, with no co-author line. Never amend or squash a commit, or rewrite one other than by the rebase below.

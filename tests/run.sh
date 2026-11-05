@@ -714,6 +714,128 @@ check "asking for a give-up write-up" grep -q "giveup.md" <<<"$(jq -r .systemMes
 eq "and fails the run for its budget" "failed budget" "$(st3 '.[0] | "\(.state) \(.reason)"')"
 in_r3 run stop failed >/dev/null
 
+section "grants"
+# A clone of its own with a gate remote, so the gate stub can run there, and a
+# contract per case. guard_why prints the reason git-guard gives, if any, and
+# "hook failed" when the hook errors, since Claude Code then blocks the command:
+# an empty reason alone would read an erroring guard as one that lets it through.
+GR="$T/work/acme/granted"
+git clone -q "$T/remotes/acme/app" "$GR"
+git -C "$GR" switch -q -c feature/granted origin/develop
+git init -q --bare "$T/gate-granted.git"
+git -C "$GR" remote add no-mistakes "$T/gate-granted.git"
+guard_why() { # guard_why <command> [cwd] -> deny reason, nothing, or "hook failed"
+  local out
+  out=$(jq -n --arg c "$1" --arg d "${2:-$GR}" '{tool_input: {command: $c}, cwd: $d}' | $K hook git-guard) || {
+    echo "hook failed"
+    return
+  }
+  jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out"
+}
+granted() { # granted <grants> -> starts a contracted run in GR
+  (cd "$GR" && "$K" run stop stopped >/dev/null 2>&1)
+  printf 'goal: g\ndone: test -f never\nbudget: 4h\ngrants: %s\n' "$1" >"$T/grant-contract.md"
+  (cd "$GR" && "$K" run start --playbook autonomous-run --goal g --steps "$T/steps.md" --contract "$T/grant-contract.md" >/dev/null)
+}
+verifier_says() { # verifier_says <last message>
+  jq -n --arg c "$GR" --arg m "$1" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"v1",agent_type:"keel-verifier",last_assistant_message:$m}' |
+    $K hook subagent-stop
+}
+gst() { (cd "$GR" && "$K" status --json .) | jq -rc "$1"; }
+PUSH_ARGS="push -u origin HEAD:feature/granted"
+PUSH="git $PUSH_ARGS"
+
+eq "outside a run a commit is let through" "" "$(guard_why "git commit -m x")"
+eq "and so is a push" "" "$(guard_why "$PUSH")"
+granted commit
+eq "granted commit, a commit on the run's branch goes through" "" "$(guard_why "git commit -m 'fix the parser'")"
+eq "and so does the commit plumbing on its branch" "" "$(guard_why "git update-ref refs/heads/feature/granted abc123 def456")"
+check "a push names the missing push grant" grep -qF 'does not grant `push`' <<<"$(guard_why "$PUSH")"
+check "and is logged for attention" grep -q "refused .git push.*yes$" "$(cd "$GR" && "$K" run dir)/decisions.tsv"
+check "a draft PR names the missing draft-pr grant" grep -qF 'does not grant `draft-pr`' <<<"$(guard_why "gh pr create --draft --base develop --title t")"
+check "--amend is refused" grep -q "never amends" <<<"$(guard_why "git commit --amend -m x")"
+check "moving another branch with update-ref is refused" grep -q "only its own branch" <<<"$(guard_why "git update-ref refs/heads/main abc123")"
+git -C "$GR" switch -q -c elsewhere
+check "a commit on another branch is refused" grep -q "only on its branch" <<<"$(guard_why "git commit -m x")"
+git -C "$GR" switch -q feature/granted
+check "through git -C as well" grep -qF 'does not grant `push`' <<<"$(guard_why "git -C $GR $PUSH_ARGS" "$T")"
+check "a wrapper it cannot see into is refused" grep -q "cannot see inside" <<<"$(guard_why "bash -c '$PUSH'")"
+granted none
+check "without the commit grant a commit is refused" grep -qF 'does not grant `commit`' <<<"$(guard_why "git commit -m x")"
+
+granted "commit, push, draft-pr"
+check "granted push, a push before /verify names the missing verdict" grep -q "a passing verifier" <<<"$(guard_why "$PUSH")"
+check "and so does a draft PR" grep -q "a passing verifier" <<<"$(guard_why "gh pr create --draft --base develop --title t")"
+verifier_says $'Ran the tests.\nVERDICT: pass'
+eq "the verifier's pass is recorded against the tree" "pass $(git -C "$GR" rev-parse 'HEAD^{tree}')" "$(gst '.[0].verifier | "\(.verdict) \(.tree)"')"
+check "a push still needs the gate" grep -q "a passing gate" <<<"$(guard_why "$PUSH")"
+(cd "$GR" && PATH="$T/stub:$PATH" "$K" gate "Check it" >/dev/null 2>&1)
+eq "keel gate in a run records its verdict against the tree" "pass $(git -C "$GR" rev-parse 'HEAD^{tree}') r1" "$(gst '.[0].gate | "\(.verdict) \(.tree) \(.run_id)"')"
+eq "with both passing on this tree, the push goes through" "" "$(guard_why "$PUSH")"
+# Ways round the grants, each refused even with every grant and both verdicts.
+denied() { # denied <name> <command> [cwd]: the guard refuses it, and does not crash
+  local why
+  why=$(guard_why "$2" "${3:-$GR}")
+  if [[ -n "$why" && "$why" != "hook failed" ]]; then pass "$1"; else fail "$1" "let through: $2"; fi
+}
+denied "quotes do not hide a force-push" "git pu''sh -u origin HEAD:main --force"
+denied "nor an amend" "git com''mit --amend -m x"
+denied "nor a quoted gh" "'gh' pr ready 12"
+denied "nor a tab before pr" "$(printf 'gh\tpr ready 12')"
+denied "a second -C aimed back at the run's tree is followed" "cd /tmp && git -C $GR -C . push --force origin HEAD:main" /tmp
+denied "GIT_DIR aimed at the run is refused" "GIT_DIR=$GR/.git git push --force origin HEAD:main"
+denied "and so is --git-dir" "git --git-dir=$GR/.git push --force origin HEAD:main"
+denied "a push chained after a new commit is refused, since the verdicts are read first" "git commit --allow-empty -m bad && $PUSH"
+denied "and after a branch switch" "git switch -q elsewhere && $PUSH"
+denied "a commit chained after a switch to another branch is refused" "git switch -q main && git commit --allow-empty -m x"
+denied "a flag before the pr subcommand does not hide a merge" "gh pr --repo o/r merge 12"
+denied "nor -R" "gh pr -R o/r merge 12"
+denied "a gh alias is refused" "gh m 12"
+denied "send-pack is refused" "git send-pack origin HEAD:refs/heads/main"
+denied "update-ref -m does not pass another ref as the run's" "git update-ref -m refs/heads/feature/granted refs/heads/main HEAD"
+denied "moving a branch with branch -f is refused" "git branch -f main HEAD"
+denied "renaming one with -M is refused" "git branch -M main"
+denied "retargeting with -Bmain is refused" "gh pr edit 12 -Bmain"
+denied "a PR from another head is refused" "gh pr create --draft --base develop --head main --title t"
+denied "a PR into another repository is refused" "gh pr create --draft --base develop -R someone/else --title t"
+denied "approving a PR is refused" "gh pr review 12 --approve"
+eq "a push on its own is still let through" "" "$(guard_why "$PUSH")"
+eq "and so is reading a PR" "" "$(guard_why "gh pr view 12")"
+eq "and so does a draft PR into the base" "" "$(guard_why "gh pr create --draft --base develop --title t --body b")"
+check "a PR that is not a draft is refused" grep -q "only draft PRs" <<<"$(guard_why "gh pr create --base develop --title t")"
+check "a PR into another base is refused" grep -q "pass --base develop" <<<"$(guard_why "gh pr create --draft --base main --title t")"
+for c in "gh pr merge 12 --squash" "gh pr ready 12" "gh pr close 12"; do
+  check "\`$c\` is refused in a run whatever the grants" grep -q "never done inside a run" <<<"$(guard_why "$c")"
+done
+check "a force-push is refused" grep -q "never force-pushes" <<<"$(guard_why "git push --force -u origin HEAD:feature/granted")"
+check "a push to another refspec is refused" grep -q "only its own branch" <<<"$(guard_why "git push -u origin HEAD:main")"
+check "deleting a branch is refused" grep -q "or deletes a branch" <<<"$(guard_why "git branch -D elsewhere")"
+check "retargeting a PR is refused" grep -q "never retargets" <<<"$(guard_why "gh pr edit 12 --base main")"
+
+git -C "$GR" commit -q --allow-empty -m "same code, new commit"
+eq "a new commit that leaves the tree unchanged keeps both verdicts" "" "$(guard_why "$PUSH")"
+echo change >"$GR/changed" && git -C "$GR" add changed && git -C "$GR" commit -q -m "new code"
+check "a change to the code needs the verifier again" grep -q "a passing verifier on this code" <<<"$(guard_why "$PUSH")"
+check "and the gate again" grep -q "a passing gate on this code" <<<"$(guard_why "$PUSH")"
+(cd "$GR" && NM_RUN_CODE=3 PATH="$T/stub:$PATH" "$K" gate "Check it" >/dev/null 2>&1)
+eq "a failing gate is recorded as fail" "fail" "$(gst '.[0].gate.verdict')"
+# A fold rewrites the commit the gate last saw, so keel gate takes its
+# stale-copy path, which records the verdict too, on the folded tree.
+git -C "$GR" push -q no-mistakes HEAD:refs/heads/feature/granted
+git -C "$GR" reset -q --soft HEAD~1 && git -C "$GR" commit -q -m "new code, folded"
+(cd "$GR" && PATH="$T/stub:$PATH" "$K" gate "Check it" >/dev/null 2>&1)
+eq "a gate after a fold records its pass on the folded tree" "pass $(git -C "$GR" rev-parse 'HEAD^{tree}')" "$(gst '.[0].gate | "\(.verdict) \(.tree)"')"
+verifier_says "Looked at it, seems fine."
+eq "a verifier that ends without a VERDICT line records fail" "fail" "$(gst '.[0].verifier.verdict')"
+check "with the reason" grep -q "without a VERDICT line" <<<"$(gst '.[0].verifier.findings')"
+verifier_says $'VERDICT: fail\nnpm test fails: parse.test.ts expected 3, got 2'
+eq "a failing verdict keeps its findings" "npm test fails: parse.test.ts expected 3, got 2" "$(gst '.[0].verifier.findings')"
+check "and is flagged for attention" grep -q "verifier: fail.*yes$" "$(cd "$GR" && "$K" run dir)/decisions.tsv"
+jq -n --arg c "$GR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"x",agent_type:"keel-agent",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
+eq "only a keel-verifier's verdict is recorded" "fail" "$(gst '.[0].verifier.verdict')"
+(cd "$GR" && "$K" run stop stopped >/dev/null)
+eq "once the run ends, a push behaves as outside a run" "" "$(guard_why "$PUSH")"
+
 section "playbooks"
 # The router matches only what the index lists, and copies numbered steps.
 PB="$ROOT/method/playbooks"

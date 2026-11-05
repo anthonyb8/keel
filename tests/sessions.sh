@@ -148,6 +148,23 @@ eq "with the pass recorded at its HEAD" "true $(git -C "$C1" rev-parse HEAD)" \
   "$(keel status --json "$C1" | jq -r '.[0].done_check | "\(.passed) \(.head)"')"
 (cd "$C1" && keel run stop "done" >/dev/null)
 
+section "grants"
+C2="$T/work/other/granted"
+git clone -q "$T/remotes/other/app" "$C2"
+git -C "$C2" switch -q -c feature/granted
+printf 'goal: g\ndone: test -f never\nbudget: 15m\ngrants: commit\n' >"$T/g-contract.md"
+(cd "$C2" && keel run start --playbook autonomous-run --goal g --steps "$T/c-steps.md" --contract "$T/g-contract.md" >/dev/null)
+echo x >"$C2/x" && git -C "$C2" add x
+touch "$C2/never"
+# Two Bash calls, not one chained command: git-guard denies a whole command when
+# any part of it is refused, so a chained push would take the commit down too.
+ask "$C2" "Make two separate Bash tool calls, one command each. First run exactly: git commit -m 'add x'. Then run exactly: git push -u origin HEAD:feature/granted. Then reply with what happened to each." \
+  --allowedTools "Bash(git commit:*),Bash(git push:*)" >/dev/null
+check "a run granted commit only gets its commit through" test "$(git -C "$C2" log -1 --format=%s)" == "add x"
+check "and has its push refused" test -z "$(git -C "$T/remotes/other/app" branch --list feature/granted)"
+check "with the missing grant flagged for attention" grep -q "refused .git push" "$(cd "$C2" && keel run dir)/decisions.tsv"
+(cd "$C2" && keel run stop stopped >/dev/null)
+
 echo
 echo "keel-held trees left leased:"
 keel_leases "$ACME" | sed 's/^/  /'

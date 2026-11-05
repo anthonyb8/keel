@@ -32,8 +32,8 @@ A change that would break a reader bumps `version`.
 | `attention` | number | the count of rows in the run's `decisions.tsv` flagged for attention |
 | `done_check` | object or null | the last done check the Stop hook ran: `{exit, passed, head, at, tail}`, with `tail` the output's last 40 lines |
 | `contract_hash` | string or null | the sha256 of the run's `contract.md` when it started; null for a run with no contract |
-| `verifier` | null | reserved for row 8: the last verifier's verdict |
-| `gate` | null | reserved for row 8: the last gate's verdict |
+| `verifier` | object or null | the last `keel-verifier`'s verdict, recorded by the SubagentStop hook: `{verdict, tree, at, findings}`, with `tree` the `HEAD^{tree}` it judged |
+| `gate` | object or null | the last `keel gate` verdict in the run: `{verdict, tree, at, run_id}` |
 
 An archived run also has `ended_at` and `note`.
 
@@ -57,3 +57,13 @@ A contract changed since the run started blocks the turn, and its command is nev
 
 `decisions.tsv` in the run's folder has one row per decision, tab-separated: time, step, decision, why, evidence, result, and `yes` when it is flagged for attention.
 Failed done checks, skipped steps, a changed contract, a spent budget and a give-up are flagged on their own; `keel run decide ... --attention` flags the agent's own.
+
+## Grants
+
+In a tree with an active contracted run, git-guard holds commits, pushes and PRs to the contract's `grants:`.
+`commit` allows `git commit` on the run's branch (never `--amend`), and `git commit-tree` and `git update-ref refs/heads/<run branch>`.
+`push` allows only `git push -u origin HEAD:<run branch>`, never forced, never a protected branch.
+`draft-pr` allows only `gh pr create --draft --base <the base>`.
+A push or PR also needs a passing `verifier` and `gate` recorded against the `HEAD^{tree}` being sent, so a fold that leaves the tree unchanged keeps both, and any code change needs both again.
+`gh pr merge`, `ready`, `close` and `reopen`, retargeting a PR, and deleting a branch or tag are refused in a run whatever the grants.
+Each refusal is logged to `decisions.tsv`, flagged for attention.

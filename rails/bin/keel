@@ -270,6 +270,9 @@ hook_subagent_stop() {
   input=$(cat)
   agent_id=$(jq -r .agent_id <<<"$input")
   cwd=$(jq -r .cwd <<<"$input")
+  if [[ "$(jq -r '.agent_type // ""' <<<"$input")" == keel-verifier ]]; then
+    record_verdict "$cwd" "$(jq -r '.last_assistant_message // ""' <<<"$input")"
+  fi
   entry=$(pool_entry "$cwd")
   [[ -n "$entry" ]] || return 0
   [[ "$(jq -r .lease_holder <<<"$entry")" == "keel:agent-$agent_id" ]] || return 0
@@ -481,12 +484,21 @@ hook_worktree_remove() {
 }
 
 # Refuses a merge, rebase, cherry-pick or revert that would move a protected
-# branch; lib/git-guard.py says how. Most commands name none of those verbs, so
-# they skip Python altogether.
+# branch, and in a contracted run anything its grants do not cover;
+# lib/git-guard.py says how. Most commands name none of those verbs, so they
+# skip Python altogether.
 hook_git_guard() {
   local input
   input=$(cat)
-  grep -Eq 'merge|rebase|cherry-pick|revert' <<<"$(jq -r '.tool_input.command // empty' <<<"$input")" || return 0
+  local text cwd
+  # Quotes and backslashes go before the match, as the shell would drop them,
+  # so `pu''sh` cannot slip past; inside a contracted run every command goes
+  # to Python.
+  text=$(jq -r '.tool_input.command // empty' <<<"$input" | tr -d "'\"\\\\" | tr '\t' ' ')
+  cwd=$(jq -r '.cwd // empty' <<<"$input")
+  if ! [[ -n "$cwd" && -f "$(run_dir "$(tree_of "$cwd" 2>/dev/null || echo /nonexistent)")/contract.md" ]]; then
+    grep -Eq 'merge|rebase|cherry-pick|revert|commit|update-ref|push|send-pack|branch|tag|gh' <<<"$text" || return 0
+  fi
   python3 -I "$LIB_DIR/git-guard.py" "$SELF" <<<"$input"
 }
 
@@ -521,8 +533,11 @@ gate() {
     no-mistakes init >&2
   fi
   if [[ ${#stale[@]} -ne 3 ]]; then
-    no-mistakes "${args[@]}"
-    return
+    local tree code=0
+    tree=$(git rev-parse 'HEAD^{tree}')
+    no-mistakes "${args[@]}" || code=$?
+    record_gate "$tree" "$code"
+    return "$code"
   fi
 
   local gate_dir=${stale[0]} branch=${stale[1]} copy=${stale[2]} code=0
@@ -531,7 +546,10 @@ gate() {
     git --git-dir="$gate_dir" update-ref --no-deref "$tag" "$copy" "$none"
   git --git-dir="$gate_dir" update-ref --no-deref -d "refs/heads/$branch" "$copy"
   echo "gate: this branch rewrote the gate's copy at ${copy:0:8}; archived it as $tag" >&2
+  local tree
+  tree=$(git rev-parse 'HEAD^{tree}')
   no-mistakes "${args[@]}" || code=$?
+  record_gate "$tree" "$code"
   # A run that never started leaves the gate's copy as no-mistakes last saw it.
   if [[ "$code" != 0 ]] && ! git --git-dir="$gate_dir" rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
     git --git-dir="$gate_dir" update-ref --no-deref "refs/heads/$branch" "$copy" "$none"
@@ -1330,6 +1348,39 @@ hook_stop() {
   jq -n --arg r "The done check \`$done_cmd\` fails (exit $code): $tail
 
 Keep going, or write $dir/giveup.md saying why you are stuck." '{decision: "block", reason: $r}'
+}
+
+# Records a keel-verifier's verdict in the run holding the tree at $1, from
+# its last message: the line `VERDICT: pass` or `VERDICT: fail`, its findings
+# after it. A verifier that ends without the line fails. Only this hook writes
+# the verdict, so the session that did the work never records its own pass.
+record_verdict() { # record_verdict <cwd> <last message>
+  local tree dir verdict findings
+  tree=$(tree_of "$1" 2>/dev/null) || return 0
+  dir=$(run_dir "$tree")
+  [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] || return 0
+  verdict=$(grep -oE '^VERDICT: (pass|fail)' <<<"$2" | tail -1 | cut -d' ' -f2 || true)
+  findings=$(sed -n '/^VERDICT: /,$p' <<<"$2" | tail -n +2 | head -c 4000)
+  if [[ -z "$verdict" ]]; then
+    verdict=fail
+    findings="the verifier ended without a VERDICT line"
+  fi
+  run_update "$dir" '.verifier = {verdict: $v, tree: $t, at: $now, findings: $f}' \
+    --arg v "$verdict" --arg t "$(git -C "$tree" rev-parse 'HEAD^{tree}')" --arg f "$findings"
+  log_row "$dir" "verifier: $verdict" "a fresh keel-verifier ran the checks" "HEAD^{tree} $(git -C "$tree" rev-parse --short=12 'HEAD^{tree}')" "$verdict" "$([[ "$verdict" == pass ]] || echo yes)"
+}
+
+# Records the gate's verdict in the run holding this tree, against the tree
+# the gate ran on, with no-mistakes' run id.
+record_gate() { # record_gate <tree hash> <exit code>
+  local top dir verdict id
+  top=$(git rev-parse --show-toplevel)
+  dir=$(run_dir "$top")
+  [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] || return 0
+  verdict=$([[ "$2" == 0 ]] && echo pass || echo fail)
+  id=$(no-mistakes axi status 2>/dev/null | toon_field run id || true)
+  run_update "$dir" '.gate = {verdict: $v, tree: $t, at: $now, run_id: $id}' --arg v "$verdict" --arg t "$1" --arg id "$id"
+  log_row "$dir" "gate: $verdict" "keel gate ran no-mistakes" "run ${id:-unknown}" "$verdict" "$([[ "$verdict" == pass ]] || echo yes)"
 }
 
 cmd="${1:-}"
