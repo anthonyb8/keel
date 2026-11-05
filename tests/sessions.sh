@@ -103,12 +103,22 @@ section "routing"
 ROUTE="Do not do the task. Reply with only the first line of the todo list you would open for it, and the playbook you matched on the line before it, as 'Playbook: <name>' or 'no playbook fits'."
 # route <prompt> -> the reply to a task, asking only for how it was routed
 route() { ask "$OTHER" "Task: $1"$'\n\n'"$ROUTE"; }
-reply=$(route "pick up ANB-31")
-check "pick up ABC-123 matches the issue playbook" grep -qi "Playbook: issue" <<<"$reply"
-check "and gives its first step word for word as the todo list's first line" grep -qF "$(sed -n 's/^1\. //p' "$ROOT/method/playbooks/issue.md")" <<<"$reply"
 reply=$(route "write me a haiku about autumn")
 check "a task no playbook fits says so" grep -qi "no playbook fits" <<<"$reply"
-# PLAYBOOK_CASES
+# One task per playbook, each opening the todo list with that playbook's first
+# step, copied word for word as the router says.
+for case in \
+  "issue|pick up ANB-31" \
+  "bug-fix|the acme app crashes with a TypeError when the cart is empty; fix it" \
+  "investigation|how does this repository decide which branch a new tree is cut from?" \
+  "babysit-pr|get PR #12 green" \
+  "pause|pause here" \
+  "pickup|pick up where the last session in this tree stopped"; do
+  playbook=${case%%|*}
+  reply=$(route "${case#*|}")
+  check "a $playbook task matches the $playbook playbook" grep -qi "Playbook: $playbook" <<<"$reply"
+  check "and gives the $playbook playbook's first step word for word" grep -qF "$(sed -n 's/^1\. //p' "$ROOT/method/playbooks/$playbook.md")" <<<"$reply"
+done
 
 echo
 echo "keel-held trees left leased:"
