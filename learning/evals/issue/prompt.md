@@ -1,0 +1,1 @@
+Pick up SHOP-12. Linear isn't reachable from this machine, so here's the ticket: "Add a FREESHIP code that takes $4.99 off orders of $50 or more, and nothing off smaller ones. Acceptance: a $60 cart with FREESHIP totals $55.01; a $20 cart with FREESHIP totals $20."

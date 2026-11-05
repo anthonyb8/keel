@@ -1,0 +1,4 @@
+- Answers first: the codes come off in the order given, and TENOFF takes 10% of the total left at that point.
+- Every claim cites a path:line, and is labelled measured, read or inferred.
+- Ran something to measure the answer rather than only reading, or says it did not.
+- Changed nothing.

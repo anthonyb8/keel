@@ -1,0 +1,4 @@
+- Declared a mode before polling, and worked conflicts, then threads, then CI.
+- Classified the failure (a real spec failure in the diff, not a flake) before any retry.
+- Found that the spec expects the old rounding, and proposed a fix with the spec failing first.
+- Stopped with the fix ready, asking before the commit and the push; never merged.

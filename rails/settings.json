@@ -1,0 +1,353 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh pr comment:*)",
+      "Bash(treehouse)",
+      "Bash(th:*)",
+      "EnterWorktree",
+      "Bash(treehouse:*)",
+      "Bash(no-mistakes)",
+      "Bash(no-mistakes:*)",
+      "Bash(gh api:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr status:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run watch:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh label list:*)",
+      "Bash(gh release view:*)",
+      "Bash(gh release list:*)",
+      "Bash(gh workflow view:*)",
+      "Bash(gh workflow list:*)",
+      "Bash(gh search:*)",
+      "Bash(git commit:*)",
+      "Bash(git add:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(git push:*)",
+      "Bash(harness)",
+      "Bash(harness:*)",
+      "Bash(keel)",
+      "Bash(keel:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git branch --list:*)",
+      "Bash(git branch -a:*)",
+      "Bash(git branch -r:*)",
+      "Bash(git branch --show-current:*)",
+      "Bash(git remote -v:*)",
+      "Bash(git remote get-url:*)",
+      "Bash(git worktree list:*)",
+      "Bash(git stash list:*)",
+      "Bash(git stash show:*)",
+      "Bash(git tag -l:*)",
+      "Bash(git tag --list:*)",
+      "mcp__claude_ai_Linear__save_project",
+      "mcp__claude_ai_Linear__save_issue",
+      "Bash(git commit-tree:*)",
+      "Bash(GIT_AUTHOR_NAME=* GIT_AUTHOR_EMAIL=* GIT_AUTHOR_DATE=* git commit-tree *)",
+      "Bash(git write-tree:*)",
+      "Bash(GIT_INDEX_FILE=* git write-tree)",
+      "Bash(GIT_INDEX_FILE=* git write-tree *)",
+      "Bash(GIT_INDEX_FILE=* git read-tree *)",
+      "Bash(GIT_INDEX_FILE=* git update-index *)",
+      "Bash(GIT_INDEX_FILE=* git ls-files *)",
+      "Bash(git hash-object:*)",
+      "Bash(git mktree:*)",
+      "Bash(git update-ref refs/heads/feature/* * *)",
+      "Bash(git update-ref refs/heads/fix/* * *)",
+      "Bash(git branch -m:*)",
+      "Bash(git -C * branch -m *)"
+    ],
+    "deny": [
+      "Bash(git reset:*)",
+      "Bash(git restore:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)",
+      "Bash(git clean:*)",
+      "Bash(git rm:*)",
+      "Bash(git mv:*)",
+      "Bash(git pull:*)",
+      "Bash(git config:*)",
+      "Bash(git apply:*)",
+      "Bash(git am:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git gc:*)",
+      "Bash(git prune:*)",
+      "Bash(git -C * reset)",
+      "Bash(git -C * reset *)",
+      "Bash(git -C * restore)",
+      "Bash(git -C * restore *)",
+      "Bash(git -C * checkout)",
+      "Bash(git -C * checkout *)",
+      "Bash(git -C * switch)",
+      "Bash(git -C * switch *)",
+      "Bash(git -C * clean)",
+      "Bash(git -C * clean *)",
+      "Bash(git -C * rm)",
+      "Bash(git -C * rm *)",
+      "Bash(git -C * mv)",
+      "Bash(git -C * mv *)",
+      "Bash(git -C * pull)",
+      "Bash(git -C * pull *)",
+      "Bash(git -C * config)",
+      "Bash(git -C * config *)",
+      "Bash(git -C * apply)",
+      "Bash(git -C * apply *)",
+      "Bash(git -C * am)",
+      "Bash(git -C * am *)",
+      "Bash(git -C * filter-branch)",
+      "Bash(git -C * filter-branch *)",
+      "Bash(git -C * gc)",
+      "Bash(git -C * gc *)",
+      "Bash(git -C * prune)",
+      "Bash(git -C * prune *)",
+      "Bash(gh pr edit * --base *)",
+      "Bash(gh pr edit * -B *)",
+      "Bash(gh pr close:*)",
+      "Bash(gh release create:*)",
+      "Bash(gh repo create:*)",
+      "Bash(gh repo edit:*)",
+      "Bash(gh repo delete:*)",
+      "Bash(gh pr review:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(gh pr reopen:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(gh issue close:*)",
+      "Bash(gh issue reopen:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(gh issue delete:*)",
+      "Bash(gh label create:*)",
+      "Bash(gh label edit:*)",
+      "Bash(gh label delete:*)",
+      "Bash(gh release edit:*)",
+      "Bash(gh release delete:*)",
+      "Bash(gh release upload:*)",
+      "Bash(gh run rerun:*)",
+      "Bash(gh run cancel:*)",
+      "Bash(gh run delete:*)",
+      "Bash(gh workflow run:*)",
+      "Bash(gh workflow enable:*)",
+      "Bash(gh workflow disable:*)",
+      "Bash(gh api graphql:*)",
+      "Bash(gh api -X:*)",
+      "Bash(gh api --method:*)",
+      "Bash(gh api -f:*)",
+      "Bash(gh api -F:*)",
+      "Bash(gh api --field:*)",
+      "Bash(gh api --raw-field:*)",
+      "Bash(gh api --input:*)",
+      "Bash(gh api * -X *)",
+      "Bash(gh api * --method *)",
+      "Bash(gh api * -f *)",
+      "Bash(gh api * -F *)",
+      "Bash(gh api * --field *)",
+      "Bash(gh api * --raw-field *)",
+      "Bash(gh api * --input *)",
+      "Bash(git branch -d:*)",
+      "Bash(git -C * branch -d *)",
+      "Bash(git branch -D:*)",
+      "Bash(git -C * branch -D *)",
+      "Bash(git branch --delete:*)",
+      "Bash(git -C * branch --delete *)",
+      "Bash(git branch -M:*)",
+      "Bash(git -C * branch -M *)",
+      "Bash(git branch -c:*)",
+      "Bash(git -C * branch -c *)",
+      "Bash(git branch -C:*)",
+      "Bash(git -C * branch -C *)",
+      "Bash(git branch --copy:*)",
+      "Bash(git -C * branch --copy *)",
+      "Bash(git branch -f:*)",
+      "Bash(git -C * branch -f *)",
+      "Bash(git branch --force:*)",
+      "Bash(git -C * branch --force *)",
+      "Bash(git branch -u:*)",
+      "Bash(git -C * branch -u *)",
+      "Bash(git branch --set-upstream-to:*)",
+      "Bash(git -C * branch --set-upstream-to *)",
+      "Bash(git branch --unset-upstream:*)",
+      "Bash(git -C * branch --unset-upstream *)",
+      "Bash(git branch --edit-description:*)",
+      "Bash(git -C * branch --edit-description *)",
+      "Bash(git remote add:*)",
+      "Bash(git -C * remote add *)",
+      "Bash(git remote remove:*)",
+      "Bash(git -C * remote remove *)",
+      "Bash(git remote rm:*)",
+      "Bash(git -C * remote rm *)",
+      "Bash(git remote rename:*)",
+      "Bash(git -C * remote rename *)",
+      "Bash(git remote set-url:*)",
+      "Bash(git -C * remote set-url *)",
+      "Bash(git remote set-head:*)",
+      "Bash(git -C * remote set-head *)",
+      "Bash(git remote set-branches:*)",
+      "Bash(git -C * remote set-branches *)",
+      "Bash(git remote prune:*)",
+      "Bash(git -C * remote prune *)",
+      "Bash(git remote update:*)",
+      "Bash(git -C * remote update *)",
+      "Bash(git worktree add:*)",
+      "Bash(git -C * worktree add *)",
+      "Bash(git worktree remove:*)",
+      "Bash(git -C * worktree remove *)",
+      "Bash(git worktree move:*)",
+      "Bash(git -C * worktree move *)",
+      "Bash(git worktree prune:*)",
+      "Bash(git -C * worktree prune *)",
+      "Bash(git worktree lock:*)",
+      "Bash(git -C * worktree lock *)",
+      "Bash(git worktree unlock:*)",
+      "Bash(git -C * worktree unlock *)",
+      "Bash(git worktree repair:*)",
+      "Bash(git -C * worktree repair *)",
+      "Bash(git stash push:*)",
+      "Bash(git -C * stash push *)",
+      "Bash(git stash pop:*)",
+      "Bash(git -C * stash pop *)",
+      "Bash(git stash drop:*)",
+      "Bash(git -C * stash drop *)",
+      "Bash(git stash clear:*)",
+      "Bash(git -C * stash clear *)",
+      "Bash(git stash apply:*)",
+      "Bash(git -C * stash apply *)",
+      "Bash(git stash save:*)",
+      "Bash(git -C * stash save *)",
+      "Bash(git stash branch:*)",
+      "Bash(git -C * stash branch *)",
+      "Bash(git stash store:*)",
+      "Bash(git -C * stash store *)",
+      "Bash(git stash create:*)",
+      "Bash(git -C * stash create *)",
+      "Bash(git stash -:*)",
+      "Bash(git -C * stash - *)",
+      "Bash(git tag -d:*)",
+      "Bash(git -C * tag -d *)",
+      "Bash(git tag --delete:*)",
+      "Bash(git -C * tag --delete *)",
+      "Bash(git tag -a:*)",
+      "Bash(git -C * tag -a *)",
+      "Bash(git tag --annotate:*)",
+      "Bash(git -C * tag --annotate *)",
+      "Bash(git tag -s:*)",
+      "Bash(git -C * tag -s *)",
+      "Bash(git tag --sign:*)",
+      "Bash(git -C * tag --sign *)",
+      "Bash(git tag -f:*)",
+      "Bash(git -C * tag -f *)",
+      "Bash(git tag --force:*)",
+      "Bash(git -C * tag --force *)",
+      "Bash(git tag -m:*)",
+      "Bash(git -C * tag -m *)",
+      "Bash(git stash)",
+      "Bash(git -C * stash)",
+      "Bash(git update-ref -d:*)",
+      "Bash(git update-ref --stdin:*)",
+      "Bash(git update-ref --no-deref:*)",
+      "Bash(git update-ref refs/heads/development:*)",
+      "Bash(git update-ref refs/heads/staging:*)",
+      "Bash(git update-ref refs/heads/main:*)",
+      "Bash(git -C * update-ref)",
+      "Bash(git -C * update-ref *)",
+      "Edit(~/.local/state/keel/runs/**)",
+      "Write(~/.local/state/keel/runs/**)"
+    ],
+    "ask": [
+      "Bash(gh pr merge:*)"
+    ],
+    "defaultMode": "auto"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "input=$(cat); cwd=$(echo \"$input\" | jq -r '.workspace.current_dir'); printf '[%s@%s %s]' \"$(whoami)\" \"$(hostname -s)\" \"$(basename \"$cwd\")\""
+  },
+  "theme": "dark-ansi",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook context"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook context"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook subagent-stop"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook worktree-create"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook worktree-remove"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook git-guard",
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/bin/keel\" hook stop",
+            "timeout": 900
+          }
+        ]
+      }
+    ]
+  }
+}

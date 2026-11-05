@@ -1,0 +1,1 @@
+Quick question before I touch anything: when someone enters both SAVE5 and TENOFF, which one comes off first, and does TENOFF take 10% of the total before or after the $5? Don't change anything, I just want to understand it.

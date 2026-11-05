@@ -1,0 +1,4 @@
+- Stopped at a safe boundary, starting nothing new.
+- Committed and pushed nothing; the work stays in the tree.
+- The resume note holds the goal, the playbook and step, what is done and verified, what is not, the next step, key files and gotchas.
+- The reply says where it stopped, what is on disk, and the first action on resume.

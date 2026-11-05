@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: treehouse
+        run: go install github.com/kunchenguid/treehouse/v3@v3.1.2 && echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+      - name: shellcheck
+        run: git ls-files -z '*.sh' rails/bin | xargs -0 shellcheck -x
+      - name: tests
+        run: tests/run.sh
+      - name: eval results
+        if: github.event_name == 'pull_request'
+        run: learning/evals/ci-check.sh "origin/${{ github.base_ref }}"
