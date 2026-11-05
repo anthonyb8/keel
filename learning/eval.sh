@@ -69,7 +69,10 @@ run_one() {
   : >"$dir/reply.md"
   # The turns of prompt.md, split on lines holding only ---.
   while IFS= read -r -d '' turn; do
-    local args=(--output-format json --permission-mode acceptEdits)
+    # No --permission-mode: the session runs under the side's own settings,
+    # as a real keel session would, so it can run the specs and the verifier
+    # can run things; an override here would measure a different keel.
+    local args=(--output-format json)
     if [[ "$first" == 1 ]]; then args+=(--session-id "$sid"); else args+=(--resume "$sid"); fi
     first=0
     reply=$(cd "$work" && HOME="$home" CLAUDE_CONFIG_DIR="$home/.keel/claude" \
@@ -78,6 +81,15 @@ run_one() {
     printf '%s\n\n' "$reply" >>"$dir/reply.md"
   done < <(awk 'BEGIN{RS="\n---\n"} {sub(/\n+$/, ""); printf "%s\0", $0}' "$CASE/prompt.md")
   rm -f "$home/.keel/claude/.credentials.json"
+  # keel's rules send a session into a worktree of its own, so the checks and
+  # the judge follow it there: the tree it leased last, else where it started.
+  local leased
+  leased=$(cd "$work" && HOME="$home" treehouse status --json 2>/dev/null |
+    jq -r '[.[] | select(.status == "leased")] | last | .path // empty')
+  if [[ -n "$leased" ]]; then
+    work="$leased"
+    echo "$work" >"$dir/work"
+  fi
   "$side/learning/evals/$playbook/checks.sh" "$work" "$dir/reply.md" "$home" >"$dir/checks.txt" 2>&1
   echo $? >"$dir/checks.code"
   # The files the session actually opened, from its transcript rather than
