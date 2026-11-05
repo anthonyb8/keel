@@ -32,6 +32,29 @@ getting answered, more than one committer.
 This does not license dependency sprawl.
 One good library for a real problem, not four to avoid writing ten lines.
 
+## Writing code
+
+Write only what the task needs.
+The best code is the code that was never written, because something already does the job.
+
+Read first: the code the change touches, its callers, and the real flow through it.
+Be lazy about the solution, never about the reading.
+Then, before writing anything, stop at the first rung that holds:
+
+1. Does this need to exist at all?
+2. Is it already in this repository?
+3. Does the standard library do it?
+4. Does the platform do it natively, such as a browser input type or a database constraint?
+5. Does a dependency already installed do it?
+6. Would one mature library earn its place, as Dependencies above says?
+7. Only then, write the minimum that works by hand.
+
+Never cut, whatever the rung: validation at a trust boundary, error handling where data can be lost, security, accessibility, or a test for logic with a branch, a loop, a parser, money or a permission in it.
+
+Small because necessary, not golfed.
+A clear five lines beat a clever one.
+An abstraction with one caller is not one yet.
+
 ## Rules vs existing code
 
 Rules are decisions, not observations.
