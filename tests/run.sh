@@ -827,12 +827,6 @@ case "$1 $2" in
     cat "$G/protection.json"
     ! jq -e 'has("status")' "$G/protection.json" >/dev/null ;;
   */rules/branches/*) cat "$G/rules.json" ;;
-  # Only the run the fixture's check links to, so a wrong run id fails.
-  */actions/runs/7) out "$G/run.json" ;;
-  */contents/*)
-    echo "$2" >>"$G/contents-calls"
-    [[ -f "$G/contents.json" ]] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-    out "$G/contents.json" ;;
   esac ;;
 *) echo "gh stub: unexpected $*" >&2; exit 9 ;;
 esac
@@ -908,7 +902,6 @@ for c in 'pr|.isDraft = true|the PR is a draft' \
   'checks|[]|no checks reported on the PR' \
   'checks|.[0].bucket = "pending"|a check is still pending' \
   'checks|.[0].bucket = "fail"|a check did not pass' \
-  'checks|.[0].bucket = "skipping"|a check was skipped and keel could not tell why: test' \
   'pr|.mergeStateStatus = "BEHIND"|the branch is behind develop and must catch up first' \
   'pr|.mergeStateStatus = "DIRTY"|the PR has conflicts with develop' \
   'pr|.mergeStateStatus = "BLOCKED"|GitHub blocks the merge: something it requires, such as a review, is missing' \
@@ -920,64 +913,15 @@ for c in 'pr|.isDraft = true|the PR is a draft' \
   gset "$file" "$filter"
   asks "not ready: $reason" "$reason"
 done
-# A skipped check passes only when keel can show the skip was meant for this
-# PR: the job's own if:, in the workflow the run used, is false from the PR's
-# facts, or the check is one the pack lists as skippable. Any other skip asks,
-# since a job skipped by mistake hides what it was there to catch.
-skip() { # skip <job yaml> [event]: a passing test job, and a skipped smoke job from <job yaml>
-  printf '{"path":".github/workflows/ci.yml"}' >"$T/gh/run.json"
-  printf 'name: ci\non: pull_request\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make test\n%s\n' "$1" |
-    base64 | jq -Rsc '{content: .}' >"$T/gh/contents.json"
-  jq -nc --arg e "${2:-pull_request}" '[{name: "test", bucket: "pass", event: $e, link: "https://github.com/acme/app/actions/runs/7/job/1"},
-    {name: "smoke", bucket: "skipping", event: $e, link: "https://github.com/acme/app/actions/runs/7/job/2"}]' >"$T/gh/checks.json"
-}
-merges() { # merges <name> [args]: exit 0, merged; keel merge's output stays in $merged
-  merged=$(km "${@:2}")
-  eq "$1" "0 merged" "$(tail -1 <<<"$merged") $(sed '$d' <<<"$merged" | jq -r .result 2>/dev/null)"
-}
+# A skipped check counts as passed, as GitHub counts a skipped required check,
+# such as a job whose if: runs it only for PRs into main.
 mreset
-skip $'  smoke:\n    if: github.base_ref == \'main\'\n    runs-on: ubuntu-latest'
-merges "a job skipped by its own if:, false for this PR, merges"
-eq "naming the line that skipped it" "ci.yml:9: if: github.base_ref == 'main'" "$(sed '$d' <<<"$merged" | jq -r '.skips[0].why')"
-eq "read from the merge ref a pull_request run used" "repos/{owner}/{repo}/contents/.github/workflows/ci.yml?ref=refs/pull/12/merge" "$(head -1 "$T/gh/contents-calls")"
+echo '[{"name":"test","bucket":"pass","link":"https://ci/1"},{"name":"smoke","bucket":"skipping","link":"https://ci/2"}]' >"$T/gh/checks.json"
+res=$(km squash 12)
+eq "a skipped check merges" "0 merged" "$(tail -1 <<<"$res") $(sed '$d' <<<"$res" | jq -r .result)"
 mreset
-skip $'  smoke:\n    if: github.base_ref == \'main\'\n    runs-on: ubuntu-latest' pull_request_target
-merges "under pull_request_target too"
-eq "read from the target, the copy pull_request_target runs" "repos/{owner}/{repo}/contents/.github/workflows/ci.yml?ref=develop" "$(head -1 "$T/gh/contents-calls")"
-mreset
-skip $'  smoke:\n    name: Release smoke\n    if: ${{ github.event_name == \'pull_request\' && github.base_ref != \'DEVELOP\' }} # main only\n    runs-on: ubuntu-latest'
-gset checks '.[1].name = "Release smoke"'
-merges "found by its name:, with \${{ }}, a comment, and strings compared without case as GitHub does"
-mreset
-skip $'  gate:\n    if: github.head_ref == \'staging\'\n    runs-on: ubuntu-latest\n  smoke:\n    needs: [test, gate]\n    runs-on: ubuntu-latest'
-merges "a job skipped because a job it needs was skipped that way merges"
-eq "naming the job it needs" "needs gate, ci.yml:9: if: github.head_ref == 'staging'" "$(sed '$d' <<<"$merged" | jq -r '.skips[0].why')"
-for c in "an if: that is true for this PR|  smoke:\n    if: github.base_ref == 'develop'" \
-  "an if: that reads another job's outputs|  smoke:\n    needs: test\n    if: needs.test.outputs.ship == 'true'" \
-  "an if: with a status function|  smoke:\n    if: failure()" \
-  "an if: that reads a variable|  smoke:\n    if: vars.SMOKE == 'on'" \
-  "an if: across lines|  smoke:\n    if: >-\n      github.base_ref == 'main'" \
-  "no if: and nothing it needs skipped|  smoke:\n    runs-on: ubuntu-latest" \
-  "a job not in the workflow|  other:\n    if: github.base_ref == 'main'" \
-  "an if: that goes on to a second line|  smoke:\n    if: github.base_ref == 'main'\n      || github.head_ref == 'feat/x'" \
-  "an if: in two \${{ }}, which GitHub reads as a string|  smoke:\n    if: \${{ github.base_ref == 'main' }} && \${{ github.head_ref == 'x' }}" \
-  "an empty if:, which GitHub may read as no condition|  smoke:\n    if: ''" \
-  "a job whose name: is not the check's|  smoke:\n    name: Release smoke\n    if: github.base_ref == 'main'"; do
-  mreset
-  skip "$(printf '%b' "${c#*|}")"
-  asks "a skip from $(cut -d'|' -f1 <<<"$c") asks" "a check was skipped and keel could not tell why: smoke"
-done
-mreset
-skip $'  smoke:\n    if: github.base_ref == \'main\''
-rm "$T/gh/contents.json"
-asks "a workflow it cannot read asks" "a check was skipped and keel could not tell why: smoke"
-mreset
-gset checks '.[0] += {bucket: "skipping", name: "Preview", link: "https://preview.example/settings"}'
-asks "a skip posted by an app, not a workflow, asks" "a check was skipped and keel could not tell why: Preview"
-printf '# checks an app may skip\nPreview\n' >"$PACK/skippable"
-merges "unless the pack lists it as skippable"
-eq "saying so" "listed in the acme pack's skippable" "$(sed '$d' <<<"$merged" | jq -r '.skips[0].why')"
-rm "$PACK/skippable"
+echo '[{"name":"test","bucket":"fail","link":"https://ci/1"},{"name":"smoke","bucket":"skipping","link":"https://ci/2"}]' >"$T/gh/checks.json"
+asks "but a failed check beside it still asks" "a check did not pass"
 
 mreset
 echo bbb >"$T/gh/moved"

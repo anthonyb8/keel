@@ -47,7 +47,7 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
   The repository picks the workspace through `~/.config/keel/linear`, one line per origin glob: `*github.com[/:]anthonyb8/* ANB LINEAR_API_KEY_PERSONAL`, meaning the team key and the env var holding that workspace's key.
   A pack's `linear` file still names the team for the repositories it owns. The key is sent in a header file, never on a command line, and never printed.
 - **Merges.** `/merge squash` or `/merge commit`, with an optional PR number, runs `keel merge <squash|commit> [n]`: it merges the PR, else the current branch's, with that method once the PR is ready, GitHub allows the method, and no PR from the same head goes elsewhere.
-  A skipped check counts as passed only when keel can show the skip was meant for this PR: an Actions job whose own `if:`, in the workflow the run used, is false from the PR's base, head and event, or a check named in the pack's `skippable` file, one per line, for an app's check no workflow explains.
+  A skipped check counts as passed, as GitHub counts a skipped required check.
   Anything else exits 2 with the reason and every fact it gathered, and `/merge` takes it to the user. git-guard refuses it inside a run.
 
 ## The four layers

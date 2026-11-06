@@ -22,7 +22,7 @@ Whatever it cannot settle comes back to you, and from you to the user as a quest
 It prints one JSON object and exits:
 
 - **0**: merged, or queued behind a merge queue (`result: "queued"`), which lands only once the queue's checks pass.
-- **2**: it merged nothing, and `reason` says why, with every fact it gathered: `pr`, `method`, `checks`, `skips`, `github` and `paired`, as far as it got.
+- **2**: it merged nothing, and `reason` says why, with every fact it gathered: `pr`, `method`, `checks`, `github` and `paired`, as far as it got.
 - **1**: the call broke, such as `gh` failing or GitHub refusing the merge; show the error and stop. Never retry with other flags.
 
 ## 3. On exit 2, ask
@@ -35,7 +35,6 @@ What each reason needs:
 
 - **No PR for the current branch**: ask which PR.
 - **A check pending**: wait, with `gh pr checks <n> --watch --fail-fast` then `keel merge` again, or stop.
-- **A check skipped**: `keel merge` already let through every skip it could explain, by a job's own `if:` or the pack's `skippable` list, so these are the ones it could not. Name each with its `why` from `skips`, and ask whether it can be skipped for this PR. When a check is one that always skips, say that adding its name to the pack's `skippable` file stops the question for good; editing the pack is the user's.
 - **A check did not pass**, **conflicts**, **changes requested**, **blocked**, **not open** or **a draft**: report it, with the check's link from `checks`, and stop. Fixing or overriding it is never this skill's.
 - **Behind**: updating the branch is a change to it, so ask; never run `gh pr update-branch` on your own.
 - **GitHub does not allow the method**, by its settings, a ruleset or required linear history: say which, and offer the other method if it is allowed.
