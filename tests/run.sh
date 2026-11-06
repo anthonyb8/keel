@@ -961,6 +961,7 @@ for c in "an if: that is true for this PR|  smoke:\n    if: github.base_ref == '
   "a job not in the workflow|  other:\n    if: github.base_ref == 'main'" \
   "an if: that goes on to a second line|  smoke:\n    if: github.base_ref == 'main'\n      || github.head_ref == 'feat/x'" \
   "an if: in two \${{ }}, which GitHub reads as a string|  smoke:\n    if: \${{ github.base_ref == 'main' }} && \${{ github.head_ref == 'x' }}" \
+  "an empty if:, which GitHub may read as no condition|  smoke:\n    if: ''" \
   "a job whose name: is not the check's|  smoke:\n    name: Release smoke\n    if: github.base_ref == 'main'"; do
   mreset
   skip "$(printf '%b' "${c#*|}")"

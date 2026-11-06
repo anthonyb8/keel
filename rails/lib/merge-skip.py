@@ -209,6 +209,8 @@ def explain(job_id, jobs, path, facts, seen):
         expr, line = job["if"]
         if expr in ("", "|", ">", "|-", ">-", "|+", ">+"):
             raise Unknown(f"{path}:{line}: its if: runs across lines")
+        if expr in ("''", '""'):
+            raise Unknown(f"{path}:{line}: its if: is empty, which GitHub may read as no condition")
         if not evaluate(expr, facts):
             return True, f"{path}:{line}: if: {expr}"
     for need in job["needs"]:
