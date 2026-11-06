@@ -1316,14 +1316,15 @@ merge_pr() { # merge_pr <squash|commit> [PR number]
   [[ "$(jq -r .state <<<"$pr")" == OPEN ]] || merge_ask "the PR is not open"
   [[ "$(jq -r .isDraft <<<"$pr")" == false ]] || merge_ask "the PR is a draft"
 
-  # Ready: every check passed, a clean merge state, no changes requested.
+  # Ready: every check passed or was skipped, a clean merge state, no changes
+  # requested. A skipped check counts as passed, as GitHub counts a skipped
+  # required check.
   checks=$(gh pr checks "$n" --json name,bucket,link 2>/dev/null || true)
   [[ -n "$checks" ]] || checks='[]'
   merge_fact checks "$checks"
   [[ "$checks" != "[]" ]] || merge_ask "no checks reported on the PR"
   if jq -e 'any(.[]; .bucket == "pending")' <<<"$checks" >/dev/null; then merge_ask "a check is still pending"; fi
-  if jq -e 'any(.[]; .bucket == "skipping")' <<<"$checks" >/dev/null; then merge_ask "a check was skipped"; fi
-  if jq -e 'any(.[]; .bucket != "pass")' <<<"$checks" >/dev/null; then merge_ask "a check did not pass"; fi
+  if jq -e 'any(.[]; .bucket != "pass" and .bucket != "skipping")' <<<"$checks" >/dev/null; then merge_ask "a check did not pass"; fi
   state=$(jq -r .mergeStateStatus <<<"$pr")
   case "$state" in
   CLEAN | HAS_HOOKS) ;;

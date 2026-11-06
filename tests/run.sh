@@ -902,7 +902,6 @@ for c in 'pr|.isDraft = true|the PR is a draft' \
   'checks|[]|no checks reported on the PR' \
   'checks|.[0].bucket = "pending"|a check is still pending' \
   'checks|.[0].bucket = "fail"|a check did not pass' \
-  'checks|.[0].bucket = "skipping"|a check was skipped' \
   'pr|.mergeStateStatus = "BEHIND"|the branch is behind develop and must catch up first' \
   'pr|.mergeStateStatus = "DIRTY"|the PR has conflicts with develop' \
   'pr|.mergeStateStatus = "BLOCKED"|GitHub blocks the merge: something it requires, such as a review, is missing' \
@@ -914,6 +913,16 @@ for c in 'pr|.isDraft = true|the PR is a draft' \
   gset "$file" "$filter"
   asks "not ready: $reason" "$reason"
 done
+# A skipped check counts as passed, as GitHub counts a skipped required check,
+# such as a job whose if: runs it only for PRs into main.
+mreset
+echo '[{"name":"test","bucket":"pass","link":"https://ci/1"},{"name":"smoke","bucket":"skipping","link":"https://ci/2"}]' >"$T/gh/checks.json"
+res=$(km squash 12)
+eq "a skipped check merges" "0 merged" "$(tail -1 <<<"$res") $(sed '$d' <<<"$res" | jq -r .result)"
+mreset
+echo '[{"name":"test","bucket":"fail","link":"https://ci/1"},{"name":"smoke","bucket":"skipping","link":"https://ci/2"}]' >"$T/gh/checks.json"
+asks "but a failed check beside it still asks" "a check did not pass"
+
 mreset
 echo bbb >"$T/gh/moved"
 asks "a head that moved while it was checked asks" "the head moved while it was being checked" squash 12

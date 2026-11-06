@@ -35,7 +35,6 @@ What each reason needs:
 
 - **No PR for the current branch**: ask which PR.
 - **A check pending**: wait, with `gh pr checks <n> --watch --fail-fast` then `keel merge` again, or stop.
-- **A check skipped**: a conditional job that did not run; name it from `checks`, and ask whether it can be skipped for this PR.
 - **A check did not pass**, **conflicts**, **changes requested**, **blocked**, **not open** or **a draft**: report it, with the check's link from `checks`, and stop. Fixing or overriding it is never this skill's.
 - **Behind**: updating the branch is a change to it, so ask; never run `gh pr update-branch` on your own.
 - **GitHub does not allow the method**, by its settings, a ruleset or required linear history: say which, and offer the other method if it is allowed.
