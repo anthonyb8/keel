@@ -1292,6 +1292,46 @@ merge_protection() { # merge_protection <branch>
   fi
 }
 
+# Each skipped check, and why: a skip passes only when keel can show it was
+# meant for this PR, since a job skipped by mistake hides what it was there to
+# catch. A check the pack lists in its `skippable` file, one name per line,
+# passes by name, for an app's check that no workflow explains. An Actions job
+# passes when lib/merge-skip.py finds its own if: false in the workflow the run
+# used: the merge ref for pull_request, the target for pull_request_target.
+# Any other skip asks, naming the checks.
+merge_skips() { # merge_skips <PR number> <target> <head> <checks json>
+  local n="$1" target="$2" head="$3" checks="$4" pack name event link run path ref text verdict skips='[]' unexplained=()
+  pack=$(pack_for "$PWD")
+  # Fields split on the unit separator, since a tab is IFS whitespace and an
+  # empty event would let the link slide into its place.
+  while IFS=$'\x1f' read -r name event link; do
+    verdict=""
+    if [[ -n "$pack" && -f "$pack/skippable" ]] &&
+      grep -qxF -- "$name" < <(sed -E 's/[[:space:]]+$//; /^[[:space:]]*(#|$)/d' "$pack/skippable"); then
+      verdict=$(jq -nc --arg p "$(basename "$pack")" '{explained: true, why: "listed in the \($p) pack'"'"'s skippable"}')
+    elif [[ "$event" == pull_request || "$event" == pull_request_target ]] && [[ "$link" =~ /actions/runs/([0-9]+)/ ]]; then
+      run="${BASH_REMATCH[1]}"
+      if [[ "$event" == pull_request ]]; then ref="refs/pull/$n/merge"; else ref="$target"; fi
+      if path=$(gh api "repos/{owner}/{repo}/actions/runs/$run" -q .path 2>/dev/null) && [[ -n "$path" ]] &&
+        text=$(gh api "repos/{owner}/{repo}/contents/$path?ref=$ref" -q .content 2>/dev/null | base64 -d 2>/dev/null) &&
+        [[ -n "$text" ]]; then
+        verdict=$(python3 -I "$LIB_DIR/merge-skip.py" "$name" "$path" "$target" "$head" "$event" <<<"$text")
+      else
+        verdict='{"explained": false, "why": "keel could not read the workflow the run used"}'
+      fi
+    else
+      verdict='{"explained": false, "why": "not an Actions job, and not in the pack'"'"'s skippable"}'
+    fi
+    skips=$(jq -c --arg n "$name" --argjson v "$verdict" '. + [{name: $n} + $v]' <<<"$skips")
+    [[ "$(jq -r .explained <<<"$verdict")" == true ]] || unexplained+=("$name")
+  done < <(jq -r '.[] | select(.bucket == "skipping") | [.name, (.event // ""), (.link // "")] | join("\u001f")' <<<"$checks")
+  merge_fact skips "$skips"
+  if ((${#unexplained[@]})); then
+    printf -v name '%s, ' "${unexplained[@]}"
+    merge_ask "a check was skipped and keel could not tell why: ${name%, }"
+  fi
+}
+
 merge_pr() { # merge_pr <squash|commit> [PR number]
   local usage="usage: keel merge <squash|commit> [PR number]" method n pr target head oid repo rules protection others checks state after out now_oid
   case "${1:-}" in
@@ -1316,14 +1356,15 @@ merge_pr() { # merge_pr <squash|commit> [PR number]
   [[ "$(jq -r .state <<<"$pr")" == OPEN ]] || merge_ask "the PR is not open"
   [[ "$(jq -r .isDraft <<<"$pr")" == false ]] || merge_ask "the PR is a draft"
 
-  # Ready: every check passed, a clean merge state, no changes requested.
-  checks=$(gh pr checks "$n" --json name,bucket,link 2>/dev/null || true)
+  # Ready: every check passed or was skipped on purpose, a clean merge state,
+  # no changes requested.
+  checks=$(gh pr checks "$n" --json name,bucket,event,link 2>/dev/null || true)
   [[ -n "$checks" ]] || checks='[]'
   merge_fact checks "$checks"
   [[ "$checks" != "[]" ]] || merge_ask "no checks reported on the PR"
   if jq -e 'any(.[]; .bucket == "pending")' <<<"$checks" >/dev/null; then merge_ask "a check is still pending"; fi
-  if jq -e 'any(.[]; .bucket == "skipping")' <<<"$checks" >/dev/null; then merge_ask "a check was skipped"; fi
-  if jq -e 'any(.[]; .bucket != "pass")' <<<"$checks" >/dev/null; then merge_ask "a check did not pass"; fi
+  if jq -e 'any(.[]; .bucket != "pass" and .bucket != "skipping")' <<<"$checks" >/dev/null; then merge_ask "a check did not pass"; fi
+  merge_skips "$n" "$target" "$head" "$checks"
   state=$(jq -r .mergeStateStatus <<<"$pr")
   case "$state" in
   CLEAN | HAS_HOOKS) ;;
