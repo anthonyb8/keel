@@ -606,7 +606,7 @@ eq "status follows docs/status.md version 1" "true" "$(st '.[0] | (["version","t
   and .version == 1
   and (.tree|type) == "string" and (.branch|type) == "string" and (.playbook|type) == "string"
   and (.goal|type) == "string" and (.state|IN("active","paused","done","stopped","failed"))
-  and (.steps|type) == "array" and all(.steps[]; (.title|type) == "string" and (.state|IN("pending","doing","done","skipped")) and has("reason") and .attempts == [])
+  and (.steps|type) == "array" and all(.steps[]; (.title|type) == "string" and (.state|IN("pending","doing","done","skipped")) and has("reason") and has("skip_code") and .skip_code == null and .attempts == [])
   and (.current == null or (.current|type) == "number")
   and all(.started_at, .updated_at; test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and (.stale|type) == "boolean"
   and .attention == 0 and .done_check == null and .contract_hash == null and .verifier == null and .gate == null')"
@@ -615,10 +615,16 @@ in_r1 run step 1 doing
 eq "a step being worked on is the current one" "1 doing" "$(st '.[0] | "\(.current) \(.steps[0].state)"')"
 in_r1 run step 1 "done"
 eq "finishing it moves current to the next open step" "2" "$(st '.[0].current')"
-refute "a skip needs its reason" in_r1 run step 2 skip
+refute "a skip needs its code" in_r1 run step 2 skip
+check "a skip without one of the four codes is refused, naming them" grep -qF "not-applicable, already-done, user-said, blocked" <<<"$(in_r1 run step 2 skip no ui 2>&1)"
+refute "and so is a note left unquoted" in_r1 run step 2 skip not-applicable no ui change
+refute "and so are two codes given as one" in_r1 run step 2 skip "already-done user-said"
+refute "and so is a code with a second line" in_r1 run step 2 skip $'blocked\nx'
+refute "doing and done take no code or note" in_r1 run step 2 "done" "" "a note"
+eq "leaving the step as it was" "pending" "$(st '.[0].steps[1].state')"
 refute "a step past the last is refused" in_r1 run step 9 doing
-in_r1 run step 2 skip "the repro already names the cause"
-eq "a skipped step keeps its reason" '["skipped","the repro already names the cause"]' "$(st '.[0].steps[1] | [.state, .reason]')"
+in_r1 run step 2 skip already-done "the repro already names the cause"
+eq "a skipped step keeps its code and its note" '["skipped","already-done","the repro already names the cause"]' "$(st '.[0].steps[1] | [.state, .skip_code, .reason]')"
 eq "and current moves past it" "3" "$(st '.[0].current')"
 eq "a step's attempt records when it started, when it ended and how" "1 done true" \
   "$(st '.[0].steps[0].attempts | "\(length) \(.[0].state) \(all(.[]; (.started_at|test("Z$")) and (.ended_at|test("Z$"))))"')"
@@ -634,7 +640,7 @@ eq "status for a path inside the tree finds its run" "bug-fix" "$(mkdir -p "$R1/
 eq "status for another tree lists nothing" "[]" "$("$K" status --json "$OTHER")"
 eq "status with no path lists every run" "1" "$("$K" status --json | jq length)"
 
-eq "a skipped step is flagged for attention in the log" "1|skipped step 2|the repro already names the cause" \
+eq "a skipped step is flagged for attention in the log" "1|skipped step 2|already-done: the repro already names the cause" \
   "$(st '.[0].attention')|$(cut -f3,4 --output-delimiter='|' "$(in_r1 run dir)/decisions.tsv")"
 
 section "runs keep their trees"
@@ -698,8 +704,10 @@ torn=0
 while kill -0 "$writer" 2>/dev/null; do jq -e .steps "$f" >/dev/null 2>&1 || torn=$((torn + 1)); done
 wait "$writer"
 eq "a reader polling during writes never sees a partial file" "0" "$torn"
-(cd "$R2" && "$K" run step 2 doing && "$K" run step 2 skip "covered by step 1") >/dev/null
+(cd "$R2" && "$K" run step 2 doing && "$K" run step 2 skip already-done "covered by step 1") >/dev/null
 eq "skipping a step being worked on closes its attempt as skipped" "skipped" "$(jq -r '.steps[1].attempts[-1].state' "$f")"
+(cd "$R2" && "$K" run step 3 skip blocked >/dev/null)
+eq "a skip with a code and no note has a null reason" '["blocked",null]' "$(jq -c '.steps[2] | [.skip_code, .reason]' "$f")"
 (cd "$R2" && "$K" run stop "done" >/dev/null)
 (cd "$R2" && "$K" run start --playbook no-such-playbook --goal g --steps "$T/steps.md" >/dev/null)
 eq "a run for a playbook with no file records a null hash" "null" "$(jq -r .playbook_hash "$f")"

@@ -29,7 +29,8 @@
 #                             print the issue or project template that applies in dir; no name lists them
 #   keel run start --playbook <name> --goal <text> --steps <file> [--replace]
 #                             start a run in this tree, recorded under ~/.local/state/keel/runs
-#   keel run step <n> doing|done|skip <reason>
+#   keel run step <n> doing|done|skip <code> [note]
+#                             move a step on; a skip's code is not-applicable, already-done, user-said or blocked
 #   keel run pause            pause the run; a resume note on stdin goes into its folder
 #   keel run decide "<decision>" --why <text> --evidence <ref> [--result <text>] [--attention]
 #                             log a decision to the run's decisions.tsv
@@ -1025,7 +1026,7 @@ run_start() {
       playbook_hash: (if $ph == "" then null else $ph end),
       state: "active",
       steps: [$steps | split("\n")[] | sub("^\\s*([0-9]+[.)]|[-*])\\s+"; "") | select(test("\\S"))
-              | {title: ., state: "pending", reason: null, attempts: []}],
+              | {title: ., state: "pending", reason: null, skip_code: null, attempts: []}],
       current: null, started_at: $now, updated_at: $now, stale: false,
       attention: 0, done_check: null, verifier: null, gate: null, contract_hash: null
     }' | write_atomic "$dir/status.json"
@@ -1054,13 +1055,19 @@ held_run_dir() { # held_run_dir <tree or ""> [any]: "any" also takes a run that 
   echo "$dir"
 }
 
+# Why a step was skipped, from a fixed set so skips can be counted: the step
+# does not apply to this task, its work was done earlier, the user said to
+# skip it, or it cannot run here.
+SKIP_CODES="not-applicable already-done user-said blocked"
+
 run_step() {
-  local n="${1:-}" state="${2:-}" reason="${3:-}" dir count
-  [[ "$n" =~ ^[0-9]+$ ]] || die "usage: keel run step <n> doing|done|skip <reason>"
+  local n="${1:-}" state="${2:-}" code="${3:-}" reason="${4:-}" dir count usage="usage: keel run step <n> doing|done|skip <code> [note]"
+  [[ "$n" =~ ^[0-9]+$ && $# -le 4 ]] || die "$usage"
   case "$state" in
-  doing | done) [[ -z "$reason" ]] || die "only skip takes a reason" ;;
-  skip) [[ -n "$reason" ]] || die "a skipped step needs its reason: keel run step $n skip <reason>" ;;
-  *) die "usage: keel run step <n> doing|done|skip <reason>" ;;
+  doing | done) (($# <= 2)) || die "only skip takes a code and a note" ;;
+  skip) [[ "$code" =~ ^[a-z-]+$ && " $SKIP_CODES " == *" $code "* ]] ||
+    die "a skipped step needs one of these codes, then an optional note: ${SKIP_CODES// /, }; such as keel run step $n skip not-applicable \"no UI change\"" ;;
+  *) die "$usage" ;;
   esac
   dir=$(held_run_dir "") || exit 1
   count=$(jq '.steps | length' "$dir/status.json")
@@ -1077,12 +1084,13 @@ run_step() {
     else .steps[$i] |= close_attempt(if $s == "skip" then "skipped" else "done" end) end)
     | .state = "active"
     | .steps[$i].state = (if $s == "skip" then "skipped" else $s end)
-    | .steps[$i].reason = (if $s == "skip" then $r else null end)
+    | .steps[$i].skip_code = (if $s == "skip" then $c else null end)
+    | .steps[$i].reason = (if $s == "skip" and $r != "" then $r else null end)
     | .current = (if $s == "doing" then $i + 1
         else ([.steps | to_entries[] | select(.value.state == "pending" or .value.state == "doing") | .key + 1] | first) end)' \
-    --argjson i "$((n - 1))" --arg s "$state" --arg r "$reason"
+    --argjson i "$((n - 1))" --arg s "$state" --arg c "$code" --arg r "$reason"
   if [[ "$state" == skip ]]; then
-    log_row "$dir" "skipped step $n" "$reason" "$(jq -r ".steps[$((n - 1))].title" "$dir/status.json")" "skipped" yes
+    log_row "$dir" "skipped step $n" "$code${reason:+: $reason}" "$(jq -r ".steps[$((n - 1))].title" "$dir/status.json")" "skipped" yes
   fi
 }
 

@@ -40,7 +40,7 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
 
 ## What it does
 
-- **Router.** Every keel session gets a short router at session start: the first reply to a task restates the goal, names the playbook it matched (or says no playbook fits), and opens the todo list with that playbook's steps word for word, a skipped step staying on the list as `skip: <reason>`.
+- **Router.** Every keel session gets a short router at session start: the first reply to a task restates the goal, names the playbook it matched (or says no playbook fits), and opens the todo list with that playbook's steps word for word, a skipped step staying on the list as `skip: <code>: <note>`, its code one of `not-applicable`, `already-done`, `user-said` or `blocked`.
   `/keel <task>` forces a fresh match. Playbooks live in `method/playbooks/`, indexed in its `README.md`; subagents get no router and follow their brief.
 - **Skills.** `/pickup ABC-123` runs the `issue` playbook through the ported chain: `/audit-issue`, `/mockup` for a UI change, `/implement`, `/audit-code` in a fresh `keel-agent`, `/write-tests`, `/audit-tests` in a fresh `keel-agent`, `/e2e`, then `/ship` and `/merge` on the user's ask. `/spec` files issues from `keel template issue` or `keel template project`, a pack's template winning by name.
 - **Runs.** Every task a playbook routes is a run, recorded outside the tree under `~/.local/state/keel/runs/`. `keel status --json` lists them from files alone, fast enough to poll; [docs/status.md](docs/status.md) is the schema treetop reads.
