@@ -25,7 +25,9 @@ A change that would break a reader bumps `version`.
 | `goal` | string | the goal as the router restated it |
 | `state` | string | `active`, `paused`, `done`, `stopped` or `failed`; a run that stopped or failed on its own, by giving up or by its budget, stays listed until `keel run stop` archives it |
 | `reason` | string | set when a run ended on its own: `gave up` or `budget` |
-| `steps` | array | the playbook's steps, each `{title, state, reason}`, with `state` one of `pending`, `doing`, `done` or `skipped`, and `reason` set only on a skipped step |
+| `playbook_hash` | string or null | the sha256 of `method/playbooks/<playbook>.md` when the run started, so runs that followed different versions of a playbook can be told apart; null when there is no such file |
+| `steps` | array | the playbook's steps, each `{title, state, reason, attempts}`, with `state` one of `pending`, `doing`, `done` or `skipped`, and `reason` set only on a skipped step |
+| `steps[].attempts` | array | one `{started_at, ended_at, state}` per time the step was set to `doing`; the open one has `ended_at` null and `state` `doing`, and a closed one says how it ended: `done`, `skipped`, `left` (another step was set to `doing`), `paused` or `ended` (the run stopped, gave up or ran out of budget). A step finished or skipped without being set to `doing` has none, and a run started before attempts were recorded has no `attempts` key |
 | `current` | number or null | the 1-based step being worked on, else the first one still open, else null |
 | `started_at`, `updated_at` | string | UTC, `YYYY-MM-DDTHH:MM:SSZ` |
 | `stale` | boolean | an active run whose tree had no live process at the last `keel sweep` |
@@ -49,6 +51,9 @@ An archived run also has `ended_at` and `note`.
 Every `keel-verifier`'s verdict is recorded for its tree, run or no run, in `~/.local/state/keel/verdicts/<tree-key>.json`: `{verdict, tree, path, at, findings, handback}`, with `tree` the `HEAD^{tree}` it judged and `path` the tree's absolute path.
 A verifier that hands its report back through a SubagentHandback call has it recorded by the PostToolUse hook on that call, with `handback` the verifier's agent id; any other verifier has it recorded from its last message by the SubagentStop hook, with `handback` empty.
 `keel verdict` in a tree prints the last one and passes only when it is a pass on the code at HEAD; `keel verdict --json` prints the record.
+
+That file keeps only the last verdict, so every verdict is also appended to `~/.local/state/keel/verdicts.jsonl`, one JSON object per line: `{at, verdict, tree, path, run_started_at, playbook, step}`, with `run_started_at`, `playbook` and `step` (the run's `current`) taken from the tree's active run, and null when it has none.
+The verifier rounds a change took before it passed are counted from it.
 `/ship` reads it before a push, so the session that did the work never reports its own pass.
 
 ## What a run holds

@@ -601,12 +601,12 @@ eq "status lists it with its playbook, goal, branch and state" '["bug-fix","The 
 eq "with the steps from the file, numbering and bullets dropped" '["Reproduce it.","Narrow the cause.","Fix it at the root."]' "$(st '[.[0].steps[].title]')"
 # The schema in docs/status.md: every field present, with its type. A missing
 # key reads as null in jq, so presence is checked by name.
-eq "status follows docs/status.md version 1" "true" "$(st '.[0] | (["version","tree","branch","playbook","goal","state",
+eq "status follows docs/status.md version 1" "true" "$(st '.[0] | (["version","tree","branch","playbook","playbook_hash","goal","state",
     "steps","current","started_at","updated_at","stale","attention","done_check","verifier","gate"] - keys) == []
   and .version == 1
   and (.tree|type) == "string" and (.branch|type) == "string" and (.playbook|type) == "string"
   and (.goal|type) == "string" and (.state|IN("active","paused","done","stopped","failed"))
-  and (.steps|type) == "array" and all(.steps[]; (.title|type) == "string" and (.state|IN("pending","doing","done","skipped")) and has("reason"))
+  and (.steps|type) == "array" and all(.steps[]; (.title|type) == "string" and (.state|IN("pending","doing","done","skipped")) and has("reason") and .attempts == [])
   and (.current == null or (.current|type) == "number")
   and all(.started_at, .updated_at; test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and (.stale|type) == "boolean"
   and .attention == 0 and .done_check == null and .contract_hash == null and .verifier == null and .gate == null')"
@@ -620,6 +620,16 @@ refute "a step past the last is refused" in_r1 run step 9 doing
 in_r1 run step 2 skip "the repro already names the cause"
 eq "a skipped step keeps its reason" '["skipped","the repro already names the cause"]' "$(st '.[0].steps[1] | [.state, .reason]')"
 eq "and current moves past it" "3" "$(st '.[0].current')"
+eq "a step's attempt records when it started, when it ended and how" "1 done true" \
+  "$(st '.[0].steps[0].attempts | "\(length) \(.[0].state) \(all(.[]; (.started_at|test("Z$")) and (.ended_at|test("Z$"))))"')"
+eq "a run records the hash of the playbook file it followed" "$(sha256sum "$ROOT/method/playbooks/bug-fix.md" | cut -d' ' -f1)" "$(st '.[0].playbook_hash')"
+in_r1 run step 1 doing
+eq "going back to a finished step opens a second attempt" "done doing" "$(st '[.[0].steps[0].attempts[].state] | join(" ")')"
+in_r1 run step 3 doing
+in_r1 run step 3 doing
+eq "starting another step closes the open attempt as left" "left" "$(st '.[0].steps[0].attempts[-1].state')"
+eq "and setting a step to doing twice keeps one attempt open" "1" "$(st '.[0].steps[2].attempts | length')"
+in_r1 run step 1 "done"
 eq "status for a path inside the tree finds its run" "bug-fix" "$(mkdir -p "$R1/src" && cd "$R1/src" && "$K" status --json . | jq -r '.[0].playbook')"
 eq "status for another tree lists nothing" "[]" "$("$K" status --json "$OTHER")"
 eq "status with no path lists every run" "1" "$("$K" status --json | jq length)"
@@ -646,6 +656,7 @@ eq "and returns it once the run has ended" "available" "$(lease_status "$ACME" "
 
 printf 'Goal: the cart.\nNext: write the regression test.\n' | in_r1 run pause >/dev/null
 eq "pause sets the run to paused" "paused" "$(st '.[0].state')"
+eq "and closes the open attempt as paused" "paused" "$(st '.[0].steps[2].attempts[-1].state')"
 eq "with the resume note in its folder" "Next: write the regression test." "$(tail -1 "$(in_r1 run dir)/resume.md")"
 eq "a paused run is not stale" "false" "$(st '.[0].stale')"
 (cd "$ACME" && $K sweep --apply >/dev/null 2>&1)
@@ -657,6 +668,8 @@ in_r1 run start --playbook issue --goal "Another goal." --steps "$T/steps.md" --
 eq "--replace starts the new run" "issue" "$(st '.[0].playbook')"
 eq "and archives the old one as stopped" "stopped replaced by a new run" \
   "$(jq -r 'select(.note == "replaced by a new run") | "\(.state) \(.note)"' "$RUNS"/archive/*/*/status.json)"
+eq "closing its open attempt as ended" "ended" \
+  "$(jq -r 'select(.note == "replaced by a new run") | .steps[2].attempts[-1].state' "$RUNS"/archive/*/*/status.json)"
 (cd "$ACME" && "$K" run stop stopped --tree "$R1" --note "cleared by hand" >/dev/null)
 eq "stop --tree ends a run from outside its tree" "[]" "$(in_r1 status --json .)"
 eq "and archives it with its state and note" "stopped" "$(jq -r 'select(.note == "cleared by hand") | .state' "$RUNS"/archive/*/*/status.json)"
@@ -675,13 +688,22 @@ section "runs are written whole"
 R2=$(create "$ACME" feature/run-2)
 (cd "$R2" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null)
 f="$RUNS/${R2//[\/.]/-}/status.json"
+# A run recorded before attempts existed has no attempts key on its steps.
+jq 'del(.playbook_hash, .steps[].attempts)' "$f" >"$T/old-run.json" && mv "$T/old-run.json" "$f"
+(cd "$R2" && "$K" run step 1 doing)
+eq "a run recorded before attempts starts recording them" "1" "$(jq '.steps[0].attempts | length' "$f")"
 (for _ in {1..60}; do (cd "$R2" && "$K" run step 1 doing && "$K" run step 1 "done") >/dev/null; done) &
 writer=$!
 torn=0
 while kill -0 "$writer" 2>/dev/null; do jq -e .steps "$f" >/dev/null 2>&1 || torn=$((torn + 1)); done
 wait "$writer"
 eq "a reader polling during writes never sees a partial file" "0" "$torn"
+(cd "$R2" && "$K" run step 2 doing && "$K" run step 2 skip "covered by step 1") >/dev/null
+eq "skipping a step being worked on closes its attempt as skipped" "skipped" "$(jq -r '.steps[1].attempts[-1].state' "$f")"
 (cd "$R2" && "$K" run stop "done" >/dev/null)
+(cd "$R2" && "$K" run start --playbook no-such-playbook --goal g --steps "$T/steps.md" >/dev/null)
+eq "a run for a playbook with no file records a null hash" "null" "$(jq -r .playbook_hash "$f")"
+(cd "$R2" && "$K" run stop stopped >/dev/null)
 
 section "contracts"
 R3=$(create "$ACME" feature/run-3)
@@ -748,9 +770,11 @@ eq "a contract changed mid-run blocks the turn" "block" "$(jq -r .decision <<<"$
 eq "and is flagged" "contract changed mid-run|yes" "$(last_row 3,7)"
 check "and its changed command never runs" test ! -f "$R3/done.txt"
 cp "$T/contract.md" "$(in_r3 run dir)/contract.md"
+in_r3 run step 1 doing
 echo "the parser cannot be fixed without the vendor" >"$(in_r3 run dir)/giveup.md"
 eq "a written give-up lets the failing turn end" "" "$(hook_stop)"
 eq "and stops the run with the reason" "stopped gave up" "$(st3 '.[0] | "\(.state) \(.reason)"')"
+eq "closing the open attempt as ended" "ended" "$(st3 '.[0].steps[0].attempts[-1].state')"
 eq "flagged for attention" "gave up|yes" "$(last_row 3,7)"
 eq "a run that gave up stays listed for its attention" "1" "$(in_r3 status --json . | jq length)"
 eq "but no longer holds the tree" "" "$(cd "$ACME" && $K sweep 2>&1 | grep -F "kept $R3: run")"
@@ -759,6 +783,7 @@ eq "a stopped run is never held again" "" "$(hook_stop)"
 in_r3 run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract "test -f done.txt" 1h30m)" >/dev/null
 eq "a new run archives the one that gave up" "stopped" "$(jq -r 'select(.reason == "gave up") | .state' "$RUNS"/archive/*/*/status.json)"
 eq "a budget not yet spent still holds the turn" "block" "$(hook_stop | jq -r .decision)"
+in_r3 run step 1 doing
 # Started two hours ago, past its budget of an hour and a half.
 jq --arg t "$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)" '.started_at = $t' "$(in_r3 run dir)/status.json" >"$T/backdated.json"
 mv "$T/backdated.json" "$(in_r3 run dir)/status.json"
@@ -766,6 +791,7 @@ out=$(hook_stop)
 eq "a spent budget lets the failing turn end" "null" "$(jq -r .decision <<<"$out")"
 check "asking for a give-up write-up" grep -q "giveup.md" <<<"$(jq -r .systemMessage <<<"$out")"
 eq "and fails the run for its budget" "failed budget" "$(st3 '.[0] | "\(.state) \(.reason)"')"
+eq "closing the open attempt as ended" "ended" "$(st3 '.[0].steps[0].attempts[-1].state')"
 in_r3 run stop failed >/dev/null
 
 section "grants"
@@ -818,8 +844,12 @@ check "without the commit grant a commit is refused" grep -qF 'does not grant `c
 granted "commit, push, draft-pr"
 check "granted push, a push before /verify names the missing verdict" grep -q "a passing verifier" <<<"$(guard_why "$PUSH")"
 check "and so does a draft PR" grep -q "a passing verifier" <<<"$(guard_why "gh pr create --draft --base develop --title t")"
+(cd "$GR" && "$K" run step 2 doing)
 verifier_says $'Ran the tests.\nVERDICT: pass'
 eq "the verifier's pass is recorded against the tree" "pass $(git -C "$GR" rev-parse 'HEAD^{tree}')" "$(gst '.[0].verifier | "\(.verdict) \(.tree)"')"
+VH="$HOME/.local/state/keel/verdicts.jsonl"
+eq "and kept in the verdict history with the run's playbook and step" "pass autonomous-run 2 $(gst '.[0].started_at')" \
+  "$(jq -sr --arg p "$GR" '[.[] | select(.path == $p)] | last | "\(.verdict) \(.playbook) \(.step) \(.run_started_at)"' "$VH")"
 eq "with the verifier passing on this tree, the push goes through, with no gate" "" "$(guard_why "$PUSH")"
 # Ways round the grants, each refused even with every grant and a passing verifier.
 denied() { # denied <name> <command> [cwd]: the guard refuses it, and does not crash
@@ -889,6 +919,8 @@ check "a change to the code fails it" bash -c "! (cd '$GR' && '$K' verdict >/dev
 check "and says to verify again" grep -q "/verify again" <<<"$(vd)"
 verifier_says $'VERDICT: fail\nthe parser drops the last row'
 check "a failing verdict fails it" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"
+eq "the history keeps the pass before it, with no run fields outside a run" "pass null null null|fail null null null" \
+  "$(jq -sr --arg p "$GR" '[.[] | select(.path == $p)][-2:] | map("\(.verdict) \(.run_started_at) \(.playbook) \(.step)") | join("|")' "$VH")"
 check "and shows the findings" grep -q "the parser drops the last row" <<<"$(vd)"
 jq -n --arg c "$GR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"x",agent_type:"keel-agent",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
 check "outside a run too, only a keel-verifier's verdict is recorded" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"

@@ -958,6 +958,16 @@ run_update() { # run_update <run dir> <jq filter> [jq args...]
   jq --arg now "$(now)" "$@" "($filter) | .updated_at = \$now" "$dir/status.json" | write_atomic "$dir/status.json"
 }
 
+# jq definitions for a step's attempts, prefixed to a run_update filter. A
+# step set to doing opens an attempt; whatever moves the run off the step
+# closes it, saying how: done, skipped, left (another step started), paused or
+# ended (the run stopped). A step from before attempts has no key, which jq
+# reads as an empty list.
+ATTEMPTS_JQ='
+  def close_attempt($how): if (.attempts | length) > 0 and .attempts[-1].ended_at == null
+    then .attempts[-1] |= (.ended_at = $now | .state = $how) else . end;
+  def close_attempts($how): .steps |= map(close_attempt($how));'
+
 # Prints "<playbook> <state> at step <n>" when the tree has an active or
 # paused run, and fails when it has none.
 run_holding() {
@@ -969,7 +979,7 @@ run_holding() {
 }
 
 run_start() {
-  local playbook="" goal="" steps="" replace=0 contract="" allow_passing=0 tree branch dir held done_cmd=""
+  local playbook="" goal="" steps="" replace=0 contract="" allow_passing=0 tree branch dir held done_cmd="" playbook_hash=""
   while (($#)); do
     case "$1" in
     --playbook) playbook="${2:-}" && shift 2 ;;
@@ -1004,14 +1014,18 @@ run_start() {
     run_archive "$dir" "$(jq -r .state "$dir/status.json")" "$(jq -r '.note // ""' "$dir/status.json")"
   fi
   branch=$(git -C "$tree" symbolic-ref -q --short HEAD 2>/dev/null || echo "")
+  # The playbook file's hash tells runs that followed different versions of
+  # the same playbook apart.
+  [[ -f "$METHOD_DIR/playbooks/$playbook.md" ]] && playbook_hash=$(sha256sum "$METHOD_DIR/playbooks/$playbook.md" | cut -d' ' -f1)
   mkdir -p "$dir"
   # One step per non-empty line, a leading "1. " or "- " dropped.
   jq -n --arg tree "$tree" --arg branch "$branch" --arg playbook "$playbook" --arg goal "$goal" \
-    --arg now "$(now)" --rawfile steps "$steps" '{
+    --arg now "$(now)" --rawfile steps "$steps" --arg ph "$playbook_hash" '{
       version: 1, tree: $tree, branch: $branch, playbook: $playbook, goal: $goal,
+      playbook_hash: (if $ph == "" then null else $ph end),
       state: "active",
       steps: [$steps | split("\n")[] | sub("^\\s*([0-9]+[.)]|[-*])\\s+"; "") | select(test("\\S"))
-              | {title: ., state: "pending", reason: null}],
+              | {title: ., state: "pending", reason: null, attempts: []}],
       current: null, started_at: $now, updated_at: $now, stale: false,
       attention: 0, done_check: null, verifier: null, gate: null, contract_hash: null
     }' | write_atomic "$dir/status.json"
@@ -1053,8 +1067,15 @@ run_step() {
   ((n >= 1 && n <= count)) || die "the run has steps 1 to $count"
   # A step being worked on is the current one; finishing or skipping it moves
   # current to the first step still open. Touching a paused run resumes it.
-  run_update "$dir" '
-    .state = "active"
+  # Setting a step to doing closes any other step's open attempt and opens one
+  # on this step, unless it already has one open; done and skip close it.
+  run_update "$dir" "$ATTEMPTS_JQ"'
+    (if $s == "doing" then
+      .steps |= (to_entries | map(if .key == $i then .value else .value | close_attempt("left") end))
+      | if (.steps[$i].attempts | length) > 0 and .steps[$i].attempts[-1].ended_at == null then .
+        else .steps[$i].attempts = .steps[$i].attempts + [{started_at: $now, ended_at: null, state: "doing"}] end
+    else .steps[$i] |= close_attempt(if $s == "skip" then "skipped" else "done" end) end)
+    | .state = "active"
     | .steps[$i].state = (if $s == "skip" then "skipped" else $s end)
     | .steps[$i].reason = (if $s == "skip" then $r else null end)
     | .current = (if $s == "doing" then $i + 1
@@ -1068,7 +1089,7 @@ run_step() {
 # Moves a run's folder to the archive, ended, so status no longer lists it.
 run_archive() { # run_archive <run dir> <state> <note>
   local dir="$1" state="$2" note="$3" started dest
-  run_update "$dir" '.state = $s | .note = (if $n == "" then null else $n end) | .ended_at = .updated_at' \
+  run_update "$dir" "$ATTEMPTS_JQ"' close_attempts("ended") | .state = $s | .note = (if $n == "" then null else $n end) | .ended_at = .updated_at' \
     --arg s "$state" --arg n "$note"
   started=$(jq -r .started_at "$dir/status.json")
   dest="$RUNS_DIR/archive/$(basename "$dir")/$started"
@@ -1113,7 +1134,7 @@ run_pause() {
     cat >"$dir/resume.md.tmp" && mv -f "$dir/resume.md.tmp" "$dir/resume.md"
     [[ -s "$dir/resume.md" ]] || rm -f "$dir/resume.md"
   fi
-  run_update "$dir" '.state = "paused"'
+  run_update "$dir" "$ATTEMPTS_JQ"' close_attempts("paused") | .state = "paused"'
   echo "run paused; folder $dir"
 }
 
@@ -1303,7 +1324,7 @@ hook_stop() {
 
   if [[ -f "$dir/giveup.md" ]]; then
     log_row "$dir" "gave up" "$(head -c 300 "$dir/giveup.md")" "$dir/giveup.md" "stopped" yes
-    run_update "$dir" '.state = "stopped" | .reason = "gave up"'
+    run_update "$dir" "$ATTEMPTS_JQ"' close_attempts("ended") | .state = "stopped" | .reason = "gave up"'
     return 0
   fi
   budget=$(contract_field "$dir/contract.md" budget)
@@ -1312,7 +1333,7 @@ hook_stop() {
     elapsed=$(($(date +%s) - started))
     if ((elapsed >= $(budget_seconds "$budget"))); then
       log_row "$dir" "budget spent" "$budget passed with the done check still failing" "$done_cmd" "failed; giveup.md asked for" yes
-      run_update "$dir" '.state = "failed" | .reason = "budget"'
+      run_update "$dir" "$ATTEMPTS_JQ"' close_attempts("ended") | .state = "failed" | .reason = "budget"'
       jq -n --arg r "The run's budget of $budget is spent and the done check still fails, so the run has failed. Write $dir/giveup.md saying where it got to and why it is stuck." \
         '{systemMessage: $r}'
       return 0
@@ -1341,7 +1362,7 @@ hook_handback() {
 # goes to $VERDICTS_DIR for every tree, where `keel verdict` reads it, and
 # into the run as well when an active run holds the tree.
 record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed it back>]
-  local tree dir verdict findings code
+  local tree dir verdict findings code at run
   tree=$(tree_of "$1" 2>/dev/null) || return 0
   code=$(git -C "$tree" rev-parse 'HEAD^{tree}' 2>/dev/null) || return 0
   verdict=$(grep -oE '^VERDICT: (pass|fail)[[:space:]]*$' <<<"$2" | tail -1 | cut -d' ' -f2 | tr -d '[:space:]' || true)
@@ -1350,11 +1371,19 @@ record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed
     verdict=fail
     findings="the verifier ended without a VERDICT line"
   fi
+  at=$(now)
   mkdir -p "$VERDICTS_DIR"
-  jq -n --arg v "$verdict" --arg t "$code" --arg p "$tree" --arg now "$(now)" --arg f "$findings" --arg h "${3:-}" \
+  jq -n --arg v "$verdict" --arg t "$code" --arg p "$tree" --arg now "$at" --arg f "$findings" --arg h "${3:-}" \
     '{verdict: $v, tree: $t, path: $p, at: $now, findings: $f, handback: $h}' | write_atomic "$VERDICTS_DIR/$(tree_key "$tree").json"
+  # The per-tree file holds only the last verdict; the history keeps every
+  # one, so the rounds a change took before it passed can be counted.
   dir=$(run_dir "$tree")
-  [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] || return 0
+  run='{}'
+  [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] &&
+    run=$(jq -c '{run_started_at: .started_at, playbook, step: .current}' "$dir/status.json")
+  jq -cn --arg v "$verdict" --arg t "$code" --arg p "$tree" --arg now "$at" --argjson run "$run" \
+    '{at: $now, verdict: $v, tree: $t, path: $p, run_started_at: null, playbook: null, step: null} + $run' >>"$STATE_DIR/verdicts.jsonl"
+  [[ "$run" != '{}' ]] || return 0
   run_update "$dir" '.verifier = {verdict: $v, tree: $t, at: $now, findings: $f}' \
     --arg v "$verdict" --arg t "$code" --arg f "$findings"
   log_row "$dir" "verifier: $verdict" "a fresh keel-verifier ran the checks" "HEAD^{tree} ${code:0:12}" "$verdict" "$([[ "$verdict" == pass ]] || echo yes)"
