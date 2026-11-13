@@ -57,6 +57,13 @@ That file keeps only the last verdict, so every verdict is also appended to `~/.
 The verifier rounds a change took before it passed are counted from it.
 `/ship` reads it before a push, so the session that did the work never reports its own pass.
 
+## Script events
+
+A keel script that settles a step's clear path and hands the rest to the agent appends one line per call to `~/.local/state/keel/events.jsonl`, so what each script settles, and why it hands work back, can be counted.
+Each line is `{at, cmd, args, exit, reason, ms, tree, playbook, step}`: the subcommand and its arguments, the exit code (0 settled, 2 handed to the agent, 1 broke), the exit-2 reason or the error, null on exit 0, how long it took in milliseconds, the tree it ran in, and the playbook and step (the run's `current`) of the tree's active run, null when it has none.
+`keel merge` writes it today; each script added later calls the same helper.
+Writing the line never changes the script's own exit code or output.
+
 ## What a run holds
 
 While a run is active or paused, `keel sweep`, SubagentStop and WorktreeRemove keep its tree, saying `kept <path>: run <playbook> <state> at step <n>`.

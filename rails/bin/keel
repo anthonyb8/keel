@@ -99,6 +99,7 @@ VERDICTS_DIR="$STATE_DIR/verdicts"
 
 die() {
   echo "keel: $*" >&2
+  EVENT_REASON="$*"
   exit 1
 }
 
@@ -1426,11 +1427,41 @@ verdict() { # verdict [--json]
 # recognise is exit 2.
 MERGE_FACTS='{}'
 
+# A keel script that settles a step's clear path appends one line per call to
+# events.jsonl: what it was asked, how it exited, why, how long it took, and
+# the run and step it ran in, so what each script settles can be counted.
+# Writing the line never changes the script's own exit code or output.
+EVENT_REASON=""
+
+event_start() { # event_start <cmd> [args...]: logs the call when the script exits
+  EVENT_CMD="$1"
+  shift
+  EVENT_ARGS=$(jq -cn '$ARGS.positional' --args "$@")
+  EVENT_T0=$(date +%s%3N)
+  trap 'event_log $?' EXIT
+}
+
+event_log() { # event_log <exit code>
+  local code="$1" tree dir run='{}'
+  {
+    tree=$(tree_of "$PWD")
+    dir=$(run_dir "$tree")
+    [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] &&
+      run=$(jq -c '{playbook, step: .current}' "$dir/status.json")
+    mkdir -p "$STATE_DIR"
+    jq -cn --arg at "$(now)" --arg cmd "$EVENT_CMD" --argjson args "$EVENT_ARGS" --argjson exit "$code" \
+      --arg reason "$EVENT_REASON" --argjson ms "$(($(date +%s%3N) - EVENT_T0))" --arg tree "$tree" --argjson run "$run" \
+      '{at: $at, cmd: $cmd, args: $args, exit: $exit, reason: (if $reason == "" then null else $reason end),
+        ms: $ms, tree: $tree, playbook: null, step: null} + $run' >>"$STATE_DIR/events.jsonl"
+  } 2>/dev/null || true
+}
+
 merge_fact() { # merge_fact <key> <json>
   MERGE_FACTS=$(jq -c --arg k "$1" --argjson v "$2" '.[$k] = $v' <<<"$MERGE_FACTS")
 }
 
 merge_ask() { # merge_ask <reason>: hands the merge to the agent
+  EVENT_REASON="$1"
   jq -n --arg r "$1" --argjson f "$MERGE_FACTS" '{result: "ask", reason: $r} + $f'
   exit 2
 }
@@ -1450,6 +1481,7 @@ merge_protection() { # merge_protection <branch>
 
 merge_pr() { # merge_pr <squash|commit> [PR number]
   local usage="usage: keel merge <squash|commit> [PR number]" method n pr target head oid repo rules protection others checks state after out now_oid
+  event_start merge "$@"
   case "${1:-}" in
   squash) method=squash ;;
   commit) method=merge ;;

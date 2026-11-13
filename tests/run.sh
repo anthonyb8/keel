@@ -1114,6 +1114,33 @@ eq "behind a merge queue it reports the PR queued, exiting 0" "0 queued" "$(tail
 mreset
 echo '{"state":"OPEN","mergeCommit":null}' >"$T/gh/after.json"
 eq "a PR still open after the merge, with no queue, exits 1 rather than report a merge" "1" "$(km squash 12 | tail -1)"
+
+# Each call logs what it settled or handed back, for keel stats to count.
+EV="$HOME/.local/state/keel/events.jsonl"
+ev() { tail -1 "$EV" | jq -c "$1"; }
+mreset
+km squash 12 >/dev/null
+eq "a merged PR logs its call with exit 0, no reason and how long it took, outside a run" '["merge",["squash","12"],0,null,true,null]' \
+  "$(ev '[.cmd, .args, .exit, .reason, (.ms | type == "number" and . >= 0), .playbook]')"
+mreset
+gset checks '.[0].bucket = "pending"'
+km squash 12 >/dev/null
+eq "a PR handed back logs exit 2 with the reason keel merge printed" '[2,"a check is still pending"]' "$(ev '[.exit, .reason]')"
+mreset
+touch "$T/gh/refuse"
+km squash 12 >/dev/null
+eq "a merge that broke logs exit 1 with its error" '[1,true]' "$(ev '[.exit, (.reason | startswith("gh refused the merge"))]')"
+mreset
+(cd "$MR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null && "$K" run step 2 doing)
+km squash 12 >/dev/null
+eq "inside a run it records the run's playbook and step" '["issue",2]' "$(ev '[.playbook, .step]')"
+(cd "$MR" && "$K" run stop stopped >/dev/null)
+mreset
+gset checks '.[0].bucket = "pending"'
+mv "$EV" "$T/events.saved" && mkdir "$EV"
+res=$(km squash 12)
+eq "a line it cannot write leaves keel merge's exit and output as they were" "2 a check is still pending" "$(tail -1 <<<"$res") $(sed '$d' <<<"$res" | jq -r .reason)"
+rmdir "$EV" && mv "$T/events.saved" "$EV"
 rm -f "$T/stubs/gh"
 
 section "reflect"
