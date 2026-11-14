@@ -1143,6 +1143,87 @@ eq "a line it cannot write leaves keel merge's exit and output as they were" "2 
 rmdir "$EV" && mv "$T/events.saved" "$EV"
 rm -f "$T/stubs/gh"
 
+section "stats"
+# A fixture whose numbers were counted by hand: a run start the user denied,
+# then one bug-fix run that enters
+# step 1, audits in step 5 with a keel-agent and a verifier, waits ten minutes
+# on the user, goes back to step 1, and verifies again with a second model.
+SD="$T/stats-state"
+cp -r "$ROOT/tests/fixtures/stats/state" "$SD"
+mkdir -p "$HOME/.keel/claude"
+cp -r "$ROOT/tests/fixtures/stats/projects" "$HOME/.keel/claude/projects"
+ks() { XDG_STATE_HOME="$SD" "$K" stats "$@"; } # keel stats on the fixture's state, as $SD/keel
+mkdir -p "$SD/keel" && mv "$SD"/runs "$SD"/events.jsonl "$SD"/verdicts.jsonl "$SD/keel/"
+out=$(ks --json)
+skill() { jq -cS --arg n "$1" ".skills[] | select(.name == \$n) | $2" <<<"$out"; }
+eq "a verifier's spawns are /verify's runs, with their time, tokens, models and rounds per run" \
+  '[116,{"claude-haiku-5-5":3000,"claude-opus-5-5":2000},2,5000,{"2":1}]' \
+  "$(skill verify '[.agent_s, .models, .runs, .tokens.subagents, .verify_rounds]')"
+eq "a skill's step gets its time, the user's wait and its subagents' tokens" \
+  '[150,1,{"session":440,"subagents":1000},{"keel-agent":1},600]' \
+  "$(skill audit-code '[.agent_s, .runs, .tokens, .subagents, .wait_s]')"
+eq "a step naming no skill counts as the playbook's step, with going back to it a rerun" '[145,4,1,2]' \
+  "$(skill "bug-fix step 1" '[.agent_s, .calls, .reruns, .runs]')"
+# m2's second line falls after its own `step 1 doing`, so a lost dedup shows in step 1, not the router.
+eq "a message split over two lines counts its tokens once" "440" "$(skill "bug-fix step 1" '.tokens.session')"
+eq "a run's steps carry their attempts, attempt time and skip codes" '[2,145,1,{"already-done":1}]' \
+  "$(jq -c '.playbooks[0].steps | [.[0].attempts, .[0].attempt_s, .[0].rerun_runs, .[1].skip_codes]' <<<"$out")"
+eq "scripts are counted from events.jsonl, with what they handed back" '[2,{"0":1,"2":1},[["a check is still pending",1]]]' \
+  "$(jq -c '.scripts[0] | [.calls, .exits, .handed_back]' <<<"$out")"
+eq "and the verifier's first-pass rate from the decision logs" '{"first_pass":0,"rounds_to_pass":{"2":1},"verified_runs":1}' "$(jq -cS .verifier <<<"$out")"
+eq "a line it cannot parse is counted, and the rest of the file still counts" '{"lines":31,"share":0.0323,"unread":1}' "$(jq -cS .unread <<<"$out")"
+eq "a run start the user denied counts no run; only the one keel says started does" "1" "$(skill router '.runs')"
+check "no message text reaches the output" bash -c "! grep -q 'fix the cart' <<<'$out'"
+again=$(ks --json)
+eq "a second run reads nothing it has cached" '{"cached":1,"read":0}' "$(jq -cS .transcripts <<<"$again")"
+eq "with the same numbers" "$(jq -cS 'del(.transcripts)' <<<"$out")" "$(jq -cS 'del(.transcripts)' <<<"$again")"
+touch "$HOME/.keel/claude/projects/-work-app/s1/subagents/agent-v2.jsonl"
+eq "a changed subagent file makes its session read again" "1" "$(ks --json | jq .transcripts.read)"
+eq "--since leaves out runs and steps from before that day" '[[],[],["2026-11-11"]]' \
+  "$(ks --json --since 2026-11-11 | jq -c '[.skills, .playbooks, [.days[].day]]')"
+eq "--repo keeps only trees with that name in their path" '[0,4]' \
+  "$(jq -cn --argjson a "$(ks --json --repo other)" --argjson b "$(ks --json --repo app)" '[($a.skills | length), ($b.skills | length)]')"
+check "without --json it prints a table of skills" grep -qE '^verify +2 ' <<<"$(ks)"
+# The same session again in another repository, its run started the day
+# before, with three lines whose fields cannot be read.
+late="$HOME/.keel/claude/projects/-work-late"
+mkdir -p "$late"
+{
+  head -5 "$HOME/.keel/claude/projects/-work-app/s1.jsonl" | sed 's/2026-11-10T10:00:/2026-11-09T23:59:/'
+  echo '{"type":"user","timestamp":"not a time","message":{"content":"x"}}'
+  echo '{"type":"user","timestamp":"2026-11-10T10:00:12","message":{"content":"x"}}'
+  echo '{"type":"assistant","timestamp":"2026-11-10T10:00:13Z","message":{"id":"bad","usage":{"output_tokens":"lots"},"content":[]}}'
+  tail -n +6 "$HOME/.keel/claude/projects/-work-app/s1.jsonl"
+} | sed 's#/work/app#/work/late#g' >"$late/s2.jsonl"
+eq "--since leaves out a run started the day before, with everything it did on later days" "[]" \
+  "$(ks --json --since 2026-11-10 --repo late | jq -c .skills)"
+eq "a line whose timestamp or token counts cannot be read is counted unread, not fatal" "5" "$(ks --json | jq .unread.unread)"
+# Values of the wrong type anywhere it reads, as a damaged or hand-edited file would hold.
+python3 -I -c 'print("[" * 200000 + "]" * 200000)' >>"$late/s2.jsonl"
+printf '%s\n' '{"type":"user","timestamp":12345}' '[1,2]' '{"type":"assistant","timestamp":"2026-11-10T10:00:14Z","message":{"id":"neg","model":["m"],"usage":{"output_tokens":-5},"content":[]}}' >>"$late/s2.jsonl"
+python3 -I -c 'import json; print(json.dumps({"type": "assistant", "timestamp": "2026-11-10T10:00:15Z", "message": {"id": "big", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "keel run step " + "9" * 5000 + " doing"}}]}}))' >>"$late/s2.jsonl"
+python3 -I -c 'import json; print(json.dumps({"type": "assistant", "timestamp": "2026-11-10T10:00:16Z", "message": {"id": "huge", "usage": {"output_tokens": 10 ** 4000}, "content": [{"type": "tool_use", "name": "Bash", "input": {"command": ["keel run step 4 doing"]}}]}}))' >>"$late/s2.jsonl"
+mkdir -p "$late/s2/subagents"
+cp "$HOME/.keel/claude/projects/-work-app/s1/subagents/agent-a1.jsonl" "$late/s2/subagents/agent-x.jsonl"
+printf '\xff\xfe not json' >"$late/s2/subagents/agent-x.meta.json"
+bad="$SD/keel/runs/archive/-work-late/2026-11-09T23:59:05Z"
+mkdir -p "$bad"
+echo '{"playbook":null,"playbook_hash":["h"],"tree":"/work/late","state":["x"],"started_at":"2026-11-09T23:59:05Z","ended_at":"garbage","steps":[{"title":["t"],"state":"done","skip_code":7,"attempts":[{"started_at":"x","ended_at":"2026-11-10T00:00:00"}]}]}' >"$bad/status.json"
+printf 'x\ty\tverifier: \nnot a time\t1\tverifier: pass\n' >"$bad/decisions.tsv"
+echo '{"at":"2026-11-10T12:00:00Z","cmd":"merge","exit":2,"reason":["a"],"ms":"fast","tree":"/work/app"}' >>"$SD/keel/events.jsonl"
+python3 -I -c 'import json; print(json.dumps({"at": "2026-11-10T12:01:00Z", "cmd": "merge", "exit": 2.0, "reason": "float exit", "ms": 10 ** 400, "tree": "/work/app"}))' >>"$SD/keel/events.jsonl"
+check "it reads past values of the wrong type anywhere, without failing" bash -c "XDG_STATE_HOME='$SD' '$K' stats --json >'$T/stats-bad.json'"
+eq "counting the transcript lines it could not read" "10" "$(jq .unread.unread "$T/stats-bad.json")"
+eq "an exit code that is not a whole number is neither settled nor handed back" '[{"0":1,"2":2,"unknown":1},[["a check is still pending",1]]]' \
+  "$(jq -c '.scripts[0] | [.exits, .handed_back]' "$T/stats-bad.json")"
+eq "and passing no wrong-typed value through as text" "[]" \
+  "$(jq -c '[.. | strings | select(test("^\\[|^None$|^null$"))]' "$T/stats-bad.json")"
+for c in "$SD"/keel/stats-cache/*.json; do jq -c '.session.buckets[0].day = 5 | .session.cwd = ["x"]' "$c" >"$c.x" && mv "$c.x" "$c"; done
+eq "a damaged cache entry is read again from its transcript, not trusted" '[0,2]' "$(ks --json --repo app | jq -c '[.transcripts.cached, .transcripts.read]')"
+check "leaving no half-written cache file" bash -c "! ls '$SD'/keel/stats-cache/*.tmp 2>/dev/null"
+refute "a bad --since is refused" ks --since yesterday
+rm -rf "$HOME/.keel/claude/projects"
+
 section "reflect"
 # Recorded synthesizer output: findings at three levels, out of order, and
 # four that are rejected for what they lack.

@@ -37,6 +37,8 @@
 #   keel run stop done|stopped|failed [--note <text>] [--tree <path>]
 #                             end the run and archive it
 #   keel status --json [path] every run not yet archived, or the one for path; docs/status.md
+#   keel stats [--json] [--since YYYY-MM-DD] [--repo name]
+#                             which skills run most, take longest and get rerun, and on which model; docs/stats.md
 #   keel verdict [--json]     the last keel-verifier's verdict for this tree; passes only on a pass at HEAD
 #   keel merge <squash|commit> [n]
 #                             merge PR n, else the current branch's, with that method once it is
@@ -1645,6 +1647,7 @@ provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
 run) run "$@" ;;
 status) status "$@" ;;
+stats) exec python3 -I "$LIB_DIR/stats.py" "$STATE_DIR" "$HOME/.keel/claude" "$METHOD_DIR" "$@" ;;
 verdict) verdict "$@" ;;
 merge) merge_pr "$@" ;;
 reflect) reflect "$@" ;;

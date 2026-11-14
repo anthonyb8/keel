@@ -1,0 +1,2 @@
+{"type": "user", "timestamp": "2026-11-10T10:02:41Z", "isSidechain": true, "message": {"content": "brief"}}
+{"type": "assistant", "timestamp": "2026-11-10T10:03:39Z", "isSidechain": true, "message": {"id": "v1", "model": "claude-opus-5-5", "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 2000}, "content": [{"type": "text", "text": "report"}]}}
