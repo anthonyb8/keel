@@ -9,9 +9,13 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-T="$(mktemp -d "${TMPDIR:-/tmp}/keel-test.XXXXXX")"
+T="$(mktemp -d "${TMPDIR:-/tmp}/keel-test.XXXXXX")" || exit 1
 export T
 trap 'rm -rf "$T"' EXIT
+# A fixture path left empty must never name the checkout the suite started
+# from: from $T, `git -C ""` finds no repository and fails instead of
+# committing there.
+cd "$T" || exit 1
 
 # shellcheck source=tests/lib.sh
 source "$ROOT/tests/lib.sh"
@@ -277,8 +281,17 @@ check "a main session gets the router, whole" test "${ctx#*"$router"}" != "$ctx"
 out=$(jq -n --arg c "$OTHER" '{hook_event_name:"SessionStart",source:"startup",cwd:$c}' | $K hook context)
 eq "an unowned repo gets the router and no pack rules" "$(cat "$ROOT/method/router.md")" "$(jq -r .hookSpecificOutput.additionalContext <<<"$out")"
 
-create() { # create <repo> <name>
-  jq -n --arg c "$1" --arg n "$2" '{hook_event_name:"WorktreeCreate",cwd:$c,name:$n}' | $K hook worktree-create 2>/dev/null
+worktree_create() { # worktree_create <repo> <name>: the hook's own output and exit
+  jq -n --arg c "$1" --arg n "$2" '{hook_event_name:"WorktreeCreate",cwd:$c,name:$n}' | $K hook worktree-create
+}
+# Sets the variable rather than printing the path, so a tree that is not
+# created fails the test here, in the suite's own shell, not in a subshell
+# whose failure count is lost.
+create() { # create <var> <repo> <name>
+  local path
+  path=$(worktree_create "$2" "$3" 2>"$T/create-err")
+  [[ -n "$path" ]] || fail "a tree is created for $3" "$(tail -1 "$T/create-err")"
+  printf -v "$1" '%s' "$path"
 }
 stop() { # stop <tree> <agent id>
   jq -n --arg c "$1" --arg a "$2" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:$a}' | $K hook subagent-stop 2>/dev/null
@@ -292,22 +305,22 @@ harness_lease() { # harness_lease <repo> <name>
 }
 
 section "worktree create"
-P=$(create "$ACME" feature/acme-1-thing)
+create P "$ACME" feature/acme-1-thing
 check "a new name leases a pool tree" test -d "$P"
 eq "the tree is on a branch of that name" "feature/acme-1-thing" "$(git -C "$P" rev-parse --abbrev-ref HEAD)"
 eq "the tree is cut from the pack's base" "$DEVELOP" "$(git -C "$P" rev-parse HEAD)"
 eq "the lease is held by keel, not claude" "keel:feature/acme-1-thing" "$(holder "$ACME" "$P")"
-P2=$(create "$ACME" feature/acme-1-thing)
+create P2 "$ACME" feature/acme-1-thing
 eq "the same name again resumes the same tree" "$P" "$P2"
 eq "resuming leases nothing new" "1" "$( (cd "$ACME" && treehouse status --json) | jq '[.[] | select(.status == "leased")] | length')"
 
-Q=$(create "$OTHER" feature/plain)
+create Q "$OTHER" feature/plain
 eq "with no pack the tree is cut from the default branch" "$(git -C "$OTHER" rev-parse origin/main)" "$(git -C "$Q" rev-parse HEAD)"
-S=$(create "$SITE" feature/site-1)
+create S "$SITE" feature/site-1
 eq "a pack repo without the pack's base leases off its default" "$(git -C "$SITE" rev-parse origin/main)" "$(git -C "$S" rev-parse HEAD)"
 
-refute "a directory outside git is refused" create "$T" anything
-eq "a refused create prints no path" "" "$(create "$T" anything)"
+refute "a directory outside git is refused" worktree_create "$T" anything
+eq "a refused create prints no path" "" "$(worktree_create "$T" anything 2>/dev/null)"
 
 section "default provision"
 # Stand-ins for npm, which counts its installs, and node, whose version the
@@ -336,12 +349,12 @@ jq -n --arg p "$P" '{hook_event_name:"WorktreeRemove",worktree_path:$p}' | $K ho
 eq "remove returns the tree to the pool" "available" "$(lease_status "$ACME" "$P")"
 check "and releases its stack" grep -qxF "$P" "$T/released"
 check "the branch survives the return" git -C "$ACME" rev-parse --verify --quiet refs/heads/feature/acme-1-thing
-P3=$(create "$ACME" feature/acme-1-thing)
+create P3 "$ACME" feature/acme-1-thing
 eq "an existing branch with no tree gets a tree on that branch" "feature/acme-1-thing" "$(git -C "$P3" rev-parse --abbrev-ref HEAD)"
 eq "and that lease is held" "leased" "$(lease_status "$ACME" "$P3")"
 
 section "subagent stop"
-A=$(create "$ACME" agent-aaa111)
+create A "$ACME" agent-aaa111
 eq "a subagent's tree is held as keel:agent-<id>" "keel:agent-aaa111" "$(holder "$ACME" "$A")"
 stop "$A" bbb222
 eq "a stop from another agent leaves the tree alone" "leased" "$(lease_status "$ACME" "$A")"
@@ -355,7 +368,7 @@ check "and its stack is left running" test ! -s "$T/released"
 git -C "$A" add wip.txt && git -C "$A" commit -q -m wip
 stop "$A" aaa111
 eq "a tree with a commit missing from the remote is kept" "leased" "$(lease_status "$ACME" "$A")"
-B=$(create "$ACME" agent-ccc333)
+create B "$ACME" agent-ccc333
 stop "$B" ccc333
 eq "an empty tree is returned" "available" "$(lease_status "$ACME" "$B")"
 check "and its stack released" grep -qxF "$B" "$T/released"
@@ -368,7 +381,7 @@ stop "$ACME" aaa111
 check "a stop in the main checkout is a no-op" test ! -s "$T/released"
 
 section "sweep"
-C=$(create "$ACME" agent-ddd444)
+create C "$ACME" agent-ddd444
 HS=$(harness_lease "$ACME" feature/harness-idle)
 before_pool=$( (cd "$ACME" && treehouse status --json) | jq -c '[.[] | {path, status}]')
 listed=$(cd "$ACME" && $K sweep)
@@ -395,7 +408,7 @@ rm "$HOME/.config/keel/keep"
 section "stack"
 export STACK_PORT
 STACK_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-KT=$(create "$ACME" feature/acme-2-stack)
+create KT "$ACME" feature/acme-2-stack
 out=$(cd "$KT" && $K stack up 2>/dev/null)
 eq "up prints the URL once it serves" "http://127.0.0.1:$STACK_PORT/" "$out"
 check "the stack answers after up returns" curl -s -o /dev/null "$out"
@@ -417,7 +430,7 @@ refute "up refuses a repo with no stack script" bash -c "cd '$OTHER' && $K stack
 mkdir -p "$T/slow"
 printf '#!/bin/sh\nsleep 1\nexec %s "$@"\n' "$(command -v setsid)" >"$T/slow/setsid"
 chmod +x "$T/slow/setsid"
-KS=$(create "$ACME" feature/acme-3-slow)
+create KS "$ACME" feature/acme-3-slow
 out=$(cd "$KS" && PATH="$T/slow:$PATH" $K stack up 2>/dev/null)
 eq "up waits for a stack whose session starts late" "http://127.0.0.1:$STACK_PORT/" "$out"
 (cd "$KS" && $K stack down >/dev/null)
@@ -590,7 +603,7 @@ rm "$PACK/linear"
 section "runs"
 RUNS="$HOME/.local/state/keel/runs"
 printf '1. Reproduce it.\n2. Narrow the cause.\n\n- Fix it at the root.\n' >"$T/steps.md"
-R1=$(create "$ACME" feature/run-1)
+create R1 "$ACME" feature/run-1
 in_r1() { (cd "$R1" && "$K" "$@"); }
 st() { (cd "$R1" && "$K" status --json .) | jq -rc "$1"; } # st <jq filter on the array>
 eq "a tree with no run has an empty status" "[]" "$(in_r1 status --json .)"
@@ -652,7 +665,7 @@ check "and says which run holds it" grep -qF "kept $R1: run bug-fix active at st
 eq "and marks the run stale, since nothing runs in its tree" "true" "$(st '.[0].stale')"
 jq -n --arg p "$R1" '{hook_event_name:"WorktreeRemove",worktree_path:$p}' | $K hook worktree-remove >/dev/null 2>&1
 eq "WorktreeRemove keeps a tree whose run is active" "leased" "$(lease_status "$ACME" "$R1")"
-A2=$(create "$ACME" agent-fff666)
+create A2 "$ACME" agent-fff666
 (cd "$A2" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null)
 stop "$A2" fff666
 eq "SubagentStop keeps its tree while the run is active" "leased" "$(lease_status "$ACME" "$A2")"
@@ -691,7 +704,7 @@ mkdir -p "$RUNS/archive/$key/$(jq -r .started_at "$RUNS/$key/status.json")"
 eq "ending it never overwrites a run archived in the same second" "2" "$(find "$RUNS/archive/$key" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
 
 section "runs are written whole"
-R2=$(create "$ACME" feature/run-2)
+create R2 "$ACME" feature/run-2
 (cd "$R2" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null)
 f="$RUNS/${R2//[\/.]/-}/status.json"
 # A run recorded before attempts existed has no attempts key on its steps.
@@ -714,7 +727,7 @@ eq "a run for a playbook with no file records a null hash" "null" "$(jq -r .play
 (cd "$R2" && "$K" run stop stopped >/dev/null)
 
 section "contracts"
-R3=$(create "$ACME" feature/run-3)
+create R3 "$ACME" feature/run-3
 in_r3() { (cd "$R3" && "$K" "$@"); }
 st3() { (cd "$R3" && "$K" status --json .) | jq -rc "$1"; }
 hook_stop() { jq -n --arg c "$R3" '{hook_event_name:"Stop",cwd:$c,stop_hook_active:false}' | $K hook stop; }
