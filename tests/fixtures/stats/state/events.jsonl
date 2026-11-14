@@ -1,0 +1,2 @@
+{"at": "2026-11-10T11:00:00Z", "cmd": "merge", "args": ["squash", "12"], "exit": 0, "reason": null, "ms": 120, "tree": "/work/app", "playbook": null, "step": null}
+{"at": "2026-11-10T11:05:00Z", "cmd": "merge", "args": ["squash", "13"], "exit": 2, "reason": "a check is still pending", "ms": 80, "tree": "/work/app", "playbook": null, "step": null}

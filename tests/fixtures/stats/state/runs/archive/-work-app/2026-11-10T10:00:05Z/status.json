@@ -1,0 +1,88 @@
+{
+ "version": 1,
+ "tree": "/work/app",
+ "branch": "fix/cart",
+ "playbook": "bug-fix",
+ "goal": "The cart survives being empty.",
+ "playbook_hash": "h1",
+ "state": "done",
+ "steps": [
+  {
+   "title": "Reproduce it.",
+   "state": "done",
+   "reason": null,
+   "skip_code": null,
+   "attempts": [
+    {
+     "started_at": "2026-11-10T10:00:10Z",
+     "ended_at": "2026-11-10T10:01:20Z",
+     "state": "left"
+    },
+    {
+     "started_at": "2026-11-10T10:13:50Z",
+     "ended_at": "2026-11-10T10:15:05Z",
+     "state": "ended"
+    }
+   ]
+  },
+  {
+   "title": "Narrow the cause.",
+   "state": "skipped",
+   "reason": "the repro names the cause",
+   "skip_code": "already-done",
+   "attempts": []
+  },
+  {
+   "title": "Fix it at the root.",
+   "state": "done",
+   "reason": null,
+   "skip_code": null,
+   "attempts": []
+  },
+  {
+   "title": "Run the repro again.",
+   "state": "done",
+   "reason": null,
+   "skip_code": null,
+   "attempts": []
+  },
+  {
+   "title": "Audit the fix with `/audit-code`.",
+   "state": "done",
+   "reason": null,
+   "skip_code": null,
+   "attempts": [
+    {
+     "started_at": "2026-11-10T10:01:20Z",
+     "ended_at": "2026-11-10T10:13:50Z",
+     "state": "left"
+    }
+   ]
+  },
+  {
+   "title": "Make the repro the regression test.",
+   "state": "done",
+   "reason": null,
+   "skip_code": null,
+   "attempts": []
+  },
+  {
+   "title": "Stop ready for `/ship`.",
+   "state": "done",
+   "reason": null,
+   "skip_code": null,
+   "attempts": []
+  }
+ ],
+ "current": null,
+ "started_at": "2026-11-10T10:00:05Z",
+ "updated_at": "2026-11-10T10:15:05Z",
+ "ended_at": "2026-11-10T10:15:05Z",
+ "note": "fixed",
+ "stale": false,
+ "attention": 1,
+ "done_check": null,
+ "verifier": null,
+ "gate": null,
+ "contract_hash": null
+}

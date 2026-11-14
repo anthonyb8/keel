@@ -1,0 +1,2 @@
+2026-11-10T10:03:39Z	5	verifier: fail	a fresh keel-verifier ran the checks	HEAD^{tree} aaa	fail	yes
+2026-11-10T10:14:59Z	1	verifier: pass	a fresh keel-verifier ran the checks	HEAD^{tree} bbb	pass	
