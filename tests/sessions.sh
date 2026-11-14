@@ -39,6 +39,8 @@ export PATH
 
 make_fixture
 echo 'ACME RULE: the acme word is PELICAN.' >>"$PACK/rules.md"
+# The user's own rules, which keel's rules/keel.md imports from ~/.keel/you.
+echo 'MY RULE: the own word is HERON.' >>"$HOME/.keel/you/CLAUDE.md"
 LOG="$T/hooks.log"
 # The installed settings, with each context call logged so the test can see
 # which events fired and where.
@@ -77,6 +79,13 @@ reply=$(ask "$ACME" "$WORD" --resume "$SID")
 check "the rules are there after compaction and resume" grep -q PELICAN <<<"$reply"
 check "SessionStart fired on resume" test -n "$(logged ".session_id == \"$SID\" and .source == \"resume\"")"
 check "SessionStart fired after compaction" test -n "$(logged ".session_id == \"$SID\" and .source == \"compact\"")"
+
+section "your own rules"
+OWN_WORD="What is the own word given in your context? Reply with only the word, or NONE if there is none."
+check "a session has the rules in ~/.keel/you/CLAUDE.md" grep -q HERON <<<"$(ask "$OTHER" "$OWN_WORD")"
+check "and still has them after compaction and resume" grep -q HERON <<<"$(ask "$ACME" "$OWN_WORD" --resume "$SID")"
+reply=$(ask "$OTHER" "Per the rules in your context, what one command brings up an app's stack from a worktree? Reply with only the command.")
+check "beside keel's own rules" grep -q "keel stack up" <<<"$reply"
 
 section "subagent with worktree isolation"
 reply=$(ask "$ACME" "Launch exactly one subagent with the Agent tool, using isolation: \"worktree\". Do not tell it any word. Ask it to run pwd, and to report the acme word given in its own context, or NONE. Reply with two lines: its pwd, then its word." \

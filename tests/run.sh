@@ -36,7 +36,8 @@ seed_harness
 before=$(snapshot_harness)
 out=$("$ROOT/install.sh")
 eq "install writes only under ~/.keel and ~/.local/bin/keel" "" \
-  "$(grep -v -e "^linked   $HOME/.keel/" -e "^linked   $HOME/.local/bin/keel\$" <<<"$out")"
+  "$(grep -v -e "^linked   $HOME/.keel/" -e "^wrote    $HOME/.keel/you/" -e "^git init $HOME/.keel/you\$" \
+    -e "^merged   keel's settings into $HOME/.keel/you/settings.json\$" -e "^linked   $HOME/.local/bin/keel\$" <<<"$out")"
 eq "running install again changes nothing" "" "$("$ROOT/install.sh")"
 check "--check is clean after install" "$ROOT/install.sh" --check
 check "settings.json is valid JSON, or Claude Code would drop every permission" jq empty "$HOME/.keel/claude/settings.json"
@@ -75,7 +76,7 @@ out=$("$ROOT/install.sh" --check)
 refute "--check fails on a removed link" "$ROOT/install.sh" --check
 check "and names it MISSING" grep -qx "MISSING: $HOME/.keel/claude/CLAUDE.md" <<<"$out"
 "$ROOT/install.sh" >/dev/null
-eq "install puts it back" "$ROOT/rules/CLAUDE.md" "$(readlink "$HOME/.keel/claude/CLAUDE.md")"
+eq "install puts it back" "$ROOT/rules/keel.md" "$(readlink "$HOME/.keel/claude/CLAUDE.md")"
 eq "install links every skill in method/, trust/ and learning/" "$(for d in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/ "$ROOT"/learning/skills/*/; do basename "$d"; done | sort)" "$(ls "$HOME/.keel/claude/skills")"
 eq "each to its directory in the repository" "$ROOT/method/skills/spec" "$(readlink "$HOME/.keel/claude/skills/spec")"
 eq "and the keel-agent subagent" "$ROOT/method/agents/keel-agent.md" "$(readlink "$HOME/.keel/claude/agents/keel-agent.md")"
@@ -88,8 +89,63 @@ check "and names it DANGLING" grep -qx "DANGLING: $HOME/.keel/claude/skills/gone
 check "and install removes its link" test ! -L "$HOME/.keel/claude/skills/gone"
 echo stale >"$HOME/.keel/claude/VOICE.md.tmp" && mv "$HOME/.keel/claude/VOICE.md.tmp" "$HOME/.keel/claude/VOICE.md"
 "$ROOT/install.sh" >/dev/null
-eq "a link replaced with a file is relinked" "$ROOT/rules/VOICE.md" "$(readlink "$HOME/.keel/claude/VOICE.md")"
+eq "a link replaced with a file is relinked" "$HOME/.keel/you/VOICE.md" "$(readlink "$HOME/.keel/claude/VOICE.md")"
 eq "and the file is kept as .bak" "stale" "$(cat "$HOME/.keel/claude/VOICE.md.bak")"
+
+section "your own files"
+YOU="$HOME/.keel/you"
+check "install makes ~/.keel/you from the starter files" cmp "$ROOT/templates/you/VOICE.md" "$YOU/VOICE.md"
+# --git-dir, so a repository above a TMPDIR cannot answer for it.
+check "with a git history of its own" git --git-dir="$YOU/.git" rev-parse --git-dir
+echo "I write short." >"$YOU/VOICE.md"
+"$ROOT/install.sh" >/dev/null
+eq "install keeps a file you wrote" "I write short." "$(cat "$YOU/VOICE.md")"
+eq "keel's rules end by importing yours" "@~/.keel/you/CLAUDE.md" "$(tail -n 1 "$HOME/.keel/claude/CLAUDE.md")"
+rm "$YOU/OPINIONS.md"
+out=$("$ROOT/install.sh" --check)
+check "--check names a file gone from ~/.keel/you MISSING" grep -qx "MISSING: $YOU/OPINIONS.md, which \`keel init\` makes" <<<"$out"
+"$ROOT/install.sh" >/dev/null
+check "and install writes it again" cmp "$ROOT/templates/you/OPINIONS.md" "$YOU/OPINIONS.md"
+
+section "settings merge"
+live="$YOU/settings.json"
+allowed() { jq -e --arg r "$1" '.permissions.allow | index($r)' "$live"; }
+# shellcheck disable=SC2317,SC2329 # called through check and refute
+denied() { jq -e --arg r "$1" '.permissions.deny | index($r)' "$live"; }
+# Claude Code writes to the live file itself, and the user adds to it.
+jq '.theme = "light" | .permissions.allow += ["Bash(make:*)"] | .permissions.defaultMode = "default"' "$live" >"$T/s" && cat "$T/s" >"$live"
+"$ROOT/install.sh" >/dev/null
+eq "install keeps what Claude Code and you wrote" "light default" "$(jq -r '"\(.theme) \(.permissions.defaultMode)"' "$live")"
+check "and your own allow rule" allowed "Bash(make:*)"
+jq '.permissions.deny -= ["Bash(git reset:*)"]' "$live" >"$T/s" && cat "$T/s" >"$live"
+out=$("$ROOT/install.sh" --check)
+refute "--check fails when a keel deny is gone from your settings" "$ROOT/install.sh" --check
+check "and names the file NOT MERGED" grep -qx "NOT MERGED: keel's settings into $live" <<<"$out"
+"$ROOT/install.sh" >/dev/null
+check "install puts keel's deny back" denied "Bash(git reset:*)"
+# A newer keel adds a deny and drops an allow; going back to this one undoes both.
+cp -r "$ROOT" "$T/newer"
+jq '.permissions.deny += ["Bash(newer-deny)"] | .permissions.allow -= ["Bash(git blame:*)"]' \
+  "$ROOT/rails/settings.json" >"$T/newer/rails/settings.json"
+"$T/newer/install.sh" >/dev/null
+check "a newer keel's deny reaches your settings" denied "Bash(newer-deny)"
+refute "and the allow it dropped leaves them" allowed "Bash(git blame:*)"
+check "while your allow stays" allowed "Bash(make:*)"
+"$ROOT/install.sh" >/dev/null
+refute "going back to the older keel takes its deny out" denied "Bash(newer-deny)"
+check "and brings back the allow" allowed "Bash(git blame:*)"
+eq "keeping what Claude Code and you wrote" "light default" "$(jq -r '"\(.theme) \(.permissions.defaultMode)"' "$live")"
+check "install is clean after going back" "$ROOT/install.sh" --check
+before_broken=$(cat "$live")
+echo '{"permissions": ' >"$live"
+# The newer keel, so there is something to merge: with nothing new, install
+# would leave the file alone even without its guard.
+err=$("$T/newer/install.sh" 2>&1 >/dev/null)
+refute "install fails on settings that are not valid JSON" test $? -eq 0
+check "and names the file BROKEN" grep -q "^BROKEN: $live " <<<"$err"
+eq "and leaves the file as it was" '{"permissions": ' "$(cat "$live")"
+echo "$before_broken" >"$live"
+"$ROOT/install.sh" >/dev/null
 
 section "keel claude"
 out=$("$K" claude --resume "two words")
@@ -1163,7 +1219,7 @@ eq "harness paths are byte for byte unchanged after every keel command above" "$
 # at a harness path on purpose must change the snapshot.
 cp -r "$ROOT" "$T/bad"
 # shellcheck disable=SC2016 # the pair is written into install.sh, which expands it
-sed -i 's#^PAIRS=(#PAIRS=(\n  "$ROOT/rules/CLAUDE.md|$HOME/.claude/CLAUDE.md"#' "$T/bad/install.sh"
+sed -i 's#^PAIRS=(#PAIRS=(\n  "$ROOT/rules/keel.md|$HOME/.claude/CLAUDE.md"#' "$T/bad/install.sh"
 "$T/bad/install.sh" >/dev/null
 refute "an install that writes a harness path is caught" test "$before" == "$(snapshot_harness)"
 
