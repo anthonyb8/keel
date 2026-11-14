@@ -1399,7 +1399,7 @@ printf '#!/bin/sh\ngit init -q "$1/repo" && mkdir "$1/repo/lib" && echo "$1/repo
 chmod +x "$BE"/*/fixture.sh
 was=$(here)
 for p in full stray nested; do
-  out=$(cd "$HERE" && EV="$BE" && if fresh "$p"; then
+  out=$(cd "$HERE" && if EV="$BE" fresh "$p"; then
     echo "case ran"
     git -C "$w" switch -q -c freeship && git -C "$w" commit -qam FREESHIP && git -C "$w" push -q origin HEAD:freeship
   fi 2>/dev/null)
