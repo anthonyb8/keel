@@ -51,8 +51,6 @@
       "Bash(git stash show:*)",
       "Bash(git tag -l:*)",
       "Bash(git tag --list:*)",
-      "mcp__claude_ai_Linear__save_project",
-      "mcp__claude_ai_Linear__save_issue",
       "Bash(git commit-tree:*)",
       "Bash(git write-tree:*)",
       "Bash(git hash-object:*)",
@@ -352,6 +350,5 @@
   "statusLine": {
     "type": "command",
     "command": "input=$(cat); cwd=$(echo \"$input\" | jq -r '.workspace.current_dir'); printf '[%s@%s %s]' \"$(whoami)\" \"$(hostname -s)\" \"$(basename \"$cwd\")\""
-  },
-  "theme": "dark-ansi"
+  }
 }

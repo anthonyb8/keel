@@ -2,6 +2,8 @@
 # keel: the front door to sessions that run on keel's rules and rails.
 #
 #   keel claude [args]        run claude on keel's config dir, ~/.keel/claude
+#   keel init                 make ~/.keel/you, the user's own rules, voice, opinions and
+#                             settings, from templates/you; a file already there is kept
 #   keel pack [dir]           print the pack that owns dir (default: the current directory)
 #   keel base [dir]           print the base branch that pack names, if any
 #   keel protected [dir]      print the branches no session may move: the base, the default
@@ -779,6 +781,22 @@ linear_search() {
     jq -r '.issues.nodes[] | "\(.identifier)\t\(.state.name)\t\(.title)\t\(.url)"'
 }
 
+# ~/.keel/you is the user's, so init only fills in what is missing, and keeps a
+# local git history so an edit, such as one /reflect applied, can be undone.
+init() {
+  local you="$HOME/.keel/you" f
+  mkdir -p "$you"
+  for f in "$TEMPLATES_DIR"/you/*; do
+    [[ -e "$you/${f##*/}" ]] && continue
+    cp "$f" "$you/${f##*/}"
+    echo "wrote    $you/${f##*/}"
+  done
+  if [[ ! -d "$you/.git" ]]; then
+    git init -q "$you"
+    echo "git init $you"
+  fi
+}
+
 # A pack's template replaces the core's of the same name rather than merging
 # into it, like provision, so a pack can put its own sections where they belong
 # instead of appending them.
@@ -1445,6 +1463,7 @@ shift
 
 case "$cmd" in
 claude) CLAUDE_CONFIG_DIR="$HOME/.keel/claude" exec claude "$@" ;;
+init) init ;;
 pack) pack_for "${1:-$PWD}" ;;
 base) base_for "${1:-$PWD}" ;;
 protected) protected_for "${1:-$PWD}" ;;

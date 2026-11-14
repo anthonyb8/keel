@@ -1,22 +1,11 @@
-# Global rules
+# keel rules
 
 These hold in every repository.
-A pack's rules, injected at session start, add to them and win where the two disagree.
+Your own rules, imported at the end of this file from `~/.keel/you/CLAUDE.md`, add to them.
+A pack's rules, injected at session start, add to both and win where they disagree.
 
-## General
+## Issues
 
-- Never use the em dash "—"; use a plain dash "-".
-- Never hand-edit CHANGELOG.md or a file marked auto-generated.
-- In long Markdown files, put each sentence on its own line.
-- Weigh quality, simplicity, robustness and long-term maintainability over development cost.
-- A bug fix starts with an end-to-end test that reproduces the bug the way a user hits it.
-- When testing a UI end to end, be picky: visual perfection is the bar.
-- Name the real type, never `any`, `Any`, `interface{}`, `Object`, `void *` or a missing annotation, whatever the surrounding code does.
-  If it truly cannot be named, say why in a comment.
-- Scope a task from my words, not from the tree, branch or uncommitted work the session started in.
-- Keep the diff to the ask. Report anything else you find broken; do not fix it.
-- When I ask for steps or commands I will run myself, give them in text. Plan approval is for changes you make.
-- Never call a public link or deployed page working on server-side checks alone: say what you checked, and treat it as unconfirmed until a real browser has been through the flow.
 - Write an issue with `/spec`, from `keel template issue`, and a build too big for one PR from `keel template project`.
   Keep every heading, and say why one is empty. Build an issue with `/pickup ABC-123`, which runs the issue playbook.
 
@@ -61,10 +50,12 @@ Read-only git is encouraged.
 ## Memory
 
 Memory holds short-lived state only, and each note says when it stops being true.
-A lesson that should hold next time is a proposed edit to this file, `OPINIONS.md`, or the pack's `rules.md`, never a memory.
+A lesson that should hold next time is a proposed edit to `~/.keel/you/CLAUDE.md`, `OPINIONS.md`, keel's `rules/keel.md`, or the pack's `rules.md`, never a memory.
 Delete a note once it expires or is promoted.
 
 ## Opinions and voice
 
 - When a technical decision would benefit from my viewpoint, read `~/.keel/claude/OPINIONS.md` first.
 - Before writing anything in my name - commits, PRs, issues, review comments, docs, email, chat - read `~/.keel/claude/VOICE.md`.
+
+@~/.keel/you/CLAUDE.md

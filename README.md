@@ -9,10 +9,14 @@ Until then it never writes a harness path: a keel session runs through `keel cla
 
 ```sh
 git clone git@github.com:anthonyb8/keel.git ~/keel
-~/keel/install.sh            # link keel's files into ~/.keel/claude and ~/.local/bin/keel
+~/keel/install.sh            # link keel's files into ~/.keel/claude and ~/.local/bin/keel, and make ~/.keel/you
 ~/keel/install.sh --check    # report drift without changing anything
 keel claude                  # then /login once in this session
 ```
+
+`~/.keel/you` holds your own rules (`CLAUDE.md`), `VOICE.md`, `OPINIONS.md` and `settings.json`.
+`keel init`, which `install.sh` runs, makes it from `templates/you/` and keeps any file already there, with a local git history and no remote.
+keel's rules in `rules/keel.md` import your `CLAUDE.md`, and keel's settings are merged into yours rather than linked, since Claude Code writes to that file: each install takes out what the last keel added, keeps your entries and Claude Code's, and adds the new ones.
 
 `rails/shell/keel.zsh` defines `th`, `thr`, `tt` and `ttr` on keel; source it only at the switch, since harness's shell defines the same names.
 
@@ -57,19 +61,19 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
 - **Trust** lets a run be left alone: a contract, a done check, a decision log and an independent verifier.
 - **Learning** turns what a session taught into edits to the rules, held to a blind eval.
 
-`rules/` holds the rules every session loads, beneath all four.
+`rules/keel.md` holds keel's rules, which every session loads beneath all four, with your own from `~/.keel/you` imported at its end.
 
 ## Layout
 
 Each directory is created by the row that first puts something in it.
 
 ```
-rules/       CLAUDE.md, OPINIONS.md, VOICE.md
+rules/       keel.md, keel's own rules
 rails/       bin/keel, settings.json and its hooks, lib/ (git-guard.py, sockrelay.mjs), shell/keel.zsh
 method/      router.md, playbooks/, skills/ and agents/keel-agent.md, linked into ~/.keel
 trust/       the contract, its hooks and skills
 learning/    skills/reflect, eval.sh, evals/<playbook>/ and their results
-templates/   issue and project templates, for keel template
+templates/   issue and project templates, for keel template, and you/, the starter ~/.keel/you
 docs/        status.md, the run schema; how each part works
 tests/       run.sh for the logic, against a throwaway HOME
 ```

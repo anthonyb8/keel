@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Point every live path keel owns at its file in this repository, so editing
-# the live path edits the repository. Idempotent: safe to re-run, and
-# re-running repairs a link an application replaced with a regular file.
+# the live path edits the repository, and the personal paths at ~/.keel/you.
+# Idempotent: safe to re-run, and re-running repairs a link an application
+# replaced with a regular file.
 #
 #   install.sh            link everything
 #   install.sh --check    report drift without changing anything
@@ -9,10 +10,19 @@
 # keel owns ~/.keel and ~/.local/bin/keel, and writes nothing else:
 # harness's paths stay exactly as they are. A displaced regular file is kept
 # next to its live path as <name>.bak.
+#
+# ~/.keel/you holds the user's own rules, voice, opinions and settings, made by
+# `keel init` when it is missing and never overwritten. keel's settings are
+# merged into ~/.keel/you/settings.json rather than linked, since Claude Code
+# writes to that file itself.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$HOME/.keel/claude"
+YOU="$HOME/.keel/you"
+# The keel settings last merged into the user's, so the next merge knows which
+# entries are keel's to take out.
+MERGED="$HOME/.keel/rails.json"
 MODE="link"
 DRIFT=0
 
@@ -22,10 +32,10 @@ usage() {
 }
 
 PAIRS=(
-  "$ROOT/rules/CLAUDE.md|$CONFIG/CLAUDE.md"
-  "$ROOT/rules/OPINIONS.md|$CONFIG/OPINIONS.md"
-  "$ROOT/rules/VOICE.md|$CONFIG/VOICE.md"
-  "$ROOT/rails/settings.json|$CONFIG/settings.json"
+  "$ROOT/rules/keel.md|$CONFIG/CLAUDE.md"
+  "$YOU/OPINIONS.md|$CONFIG/OPINIONS.md"
+  "$YOU/VOICE.md|$CONFIG/VOICE.md"
+  "$YOU/settings.json|$CONFIG/settings.json"
   "$ROOT/rails/bin/keel|$HOME/.local/bin/keel"
   "$ROOT/method|$HOME/.keel/method"
   "$ROOT/trust|$HOME/.keel/trust"
@@ -91,12 +101,71 @@ link_one() {
   ln -s "$repo" "$live"
 }
 
+# Merges keel's settings into the user's in three steps: take out what the
+# previous keel settings added, keep everything else, add the new ones. Lists
+# are sets: an entry keel no longer has goes, and the user's own entries and
+# Claude Code's writes stay. A value keel sets is the user's once they change
+# it. Running with the settings of an older keel undoes a newer one's.
+# shellcheck disable=SC2016 # a jq program, its $names are jq's
+MERGE_JQ='
+def has_entry($x): any(.[]; . == $x);
+def strip($o):
+  if type == "object" and ($o | type) == "object" then
+    with_entries(.key as $k | if $o | has($k) then .value |= strip($o[$k]) else . end)
+    | with_entries(select(.value != null))
+  elif type == "array" and ($o | type) == "array" then
+    map(select(. as $x | $o | has_entry($x) | not))
+  elif . == $o then null
+  else . end;
+def add($n):
+  if type == "object" and ($n | type) == "object" then
+    reduce ($n | keys_unsorted[]) as $k (.; if has($k) then .[$k] |= add($n[$k]) else .[$k] = $n[$k] end)
+  elif type == "array" and ($n | type) == "array" then
+    . as $l | . + [$n[] | select(. as $x | $l | has_entry($x) | not)]
+  else . end;
+strip($old) | add($new[0])
+'
+
+merge_settings() {
+  local live="$YOU/settings.json" old='{}' want tmp
+  [[ -f "$MERGED" ]] && old=$(cat "$MERGED")
+  if ! want=$(jq --argjson old "$old" --slurpfile new "$ROOT/rails/settings.json" "$MERGE_JQ" "$live"); then
+    echo "BROKEN: $live is not valid JSON; fix it and run install.sh again" >&2
+    DRIFT=$((DRIFT + 1))
+    return
+  fi
+  if [[ "$(jq -S . <<<"$want")" == "$(jq -S . "$live")" ]] &&
+    cmp -s "$ROOT/rails/settings.json" "$MERGED"; then
+    return
+  fi
+  if [[ "$MODE" == check ]]; then
+    echo "NOT MERGED: keel's settings into $live"
+    DRIFT=$((DRIFT + 1))
+    return
+  fi
+  tmp=$(mktemp "$live.XXXXXX")
+  echo "$want" >"$tmp" && mv "$tmp" "$live"
+  cp "$ROOT/rails/settings.json" "$MERGED"
+  echo "merged   keel's settings into $live"
+}
+
 case "${1:-}" in
 -h | --help) usage 0 ;;
 --check) MODE=check ;;
 "") ;;
 *) usage 1 ;;
 esac
+
+if [[ "$MODE" == check ]]; then
+  for f in "$ROOT"/templates/you/*; do
+    [[ -e "$YOU/${f##*/}" ]] && continue
+    echo "MISSING: $YOU/${f##*/}, which \`keel init\` makes"
+    DRIFT=$((DRIFT + 1))
+  done
+else
+  "$ROOT/rails/bin/keel" init
+fi
+[[ -f "$YOU/settings.json" ]] && merge_settings
 
 for pair in "${PAIRS[@]}"; do
   link_one "${pair%%|*}" "${pair##*|}"
@@ -106,7 +175,5 @@ while IFS= read -r pair; do
 done < <(method_pairs)
 prune
 
-if [[ "$MODE" == check ]]; then
-  echo "$DRIFT item(s) need attention."
-  [[ "$DRIFT" -eq 0 ]]
-fi
+[[ "$MODE" == check ]] && echo "$DRIFT item(s) need attention."
+[[ "$DRIFT" -eq 0 ]]

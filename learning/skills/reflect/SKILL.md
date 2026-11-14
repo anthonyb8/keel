@@ -39,7 +39,7 @@ It checks every citation against the transcript, drops what it cannot find, merg
  "edit": "the file and the exact change"}
 ```
 
-The levels, strongest first: `rails` makes it impossible, in rails or git-guard; `check` catches it with a hook, test or check; `playbook` is a playbook step; `skill` a skill line; `rule` a line in `rules/` or a pack's `rules.md`.
+The levels, strongest first: `rails` makes it impossible, in rails or git-guard; `check` catches it with a hook, test or check; `playbook` is a playbook step; `skill` a skill line; `rule` a line in `rules/keel.md`, the user's `~/.keel/you/CLAUDE.md` or `OPINIONS.md`, or a pack's `rules.md`.
 A "no playbook fits" shape becomes a finding at level `playbook` keyed `playbook:<shape>`.
 Reuse a key from `~/.local/state/keel/learning/seen.tsv` when the finding is the same class of mistake, so the twice rule can see it.
 
