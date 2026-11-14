@@ -704,6 +704,16 @@ torn=0
 while kill -0 "$writer" 2>/dev/null; do jq -e .steps "$f" >/dev/null 2>&1 || torn=$((torn + 1)); done
 wait "$writer"
 eq "a reader polling during writes never sees a partial file" "0" "$torn"
+# A step whose attempts jq can read but the step filter cannot index.
+jq '.steps[0].attempts = "x"' "$f" >"$T/bad-run.json" && mv "$T/bad-run.json" "$f"
+cp "$f" "$T/before.json"
+beside=$(ls -A "$(dirname "$f")")
+out=$(cd "$R2" && "$K" run step 1 doing 2>&1) && rc=0 || rc=$?
+check "a step whose update fails in jq exits non-zero" test "$rc" -ne 0
+check "with jq's error" grep -qF "jq: error" <<<"$out"
+check "and leaves status.json as it was" cmp -s "$T/before.json" "$f"
+eq "with nothing left beside it" "$beside" "$(ls -A "$(dirname "$f")")"
+jq '.steps[0].attempts = []' "$f" >"$T/bad-run.json" && mv "$T/bad-run.json" "$f"
 (cd "$R2" && "$K" run step 2 doing && "$K" run step 2 skip already-done "covered by step 1") >/dev/null
 eq "skipping a step being worked on closes its attempt as skipped" "skipped" "$(jq -r '.steps[1].attempts[-1].state' "$f")"
 (cd "$R2" && "$K" run step 3 skip blocked >/dev/null)
