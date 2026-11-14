@@ -37,6 +37,7 @@ before=$(snapshot_harness)
 out=$("$ROOT/install.sh")
 eq "install writes only under ~/.keel and ~/.local/bin/keel" "" \
   "$(grep -v -e "^linked   $HOME/.keel/" -e "^wrote    $HOME/.keel/you/" -e "^git init $HOME/.keel/you\$" \
+    -e "^current  $HOME/.keel/current -> $ROOT\$" \
     -e "^merged   keel's settings into $HOME/.keel/you/settings.json\$" -e "^linked   $HOME/.local/bin/keel\$" <<<"$out")"
 eq "running install again changes nothing" "" "$("$ROOT/install.sh")"
 check "--check is clean after install" "$ROOT/install.sh" --check
@@ -76,10 +77,10 @@ out=$("$ROOT/install.sh" --check)
 refute "--check fails on a removed link" "$ROOT/install.sh" --check
 check "and names it MISSING" grep -qx "MISSING: $HOME/.keel/claude/CLAUDE.md" <<<"$out"
 "$ROOT/install.sh" >/dev/null
-eq "install puts it back" "$ROOT/rules/keel.md" "$(readlink "$HOME/.keel/claude/CLAUDE.md")"
+eq "install puts it back" "$HOME/.keel/current/rules/keel.md" "$(readlink "$HOME/.keel/claude/CLAUDE.md")"
 eq "install links every skill in method/, trust/ and learning/" "$(for d in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/ "$ROOT"/learning/skills/*/; do basename "$d"; done | sort)" "$(ls "$HOME/.keel/claude/skills")"
-eq "each to its directory in the repository" "$ROOT/method/skills/spec" "$(readlink "$HOME/.keel/claude/skills/spec")"
-eq "and the keel-agent subagent" "$ROOT/method/agents/keel-agent.md" "$(readlink "$HOME/.keel/claude/agents/keel-agent.md")"
+eq "each to its directory in the repository, through ~/.keel/current" "$HOME/.keel/current/method/skills/spec" "$(readlink "$HOME/.keel/claude/skills/spec")"
+eq "and the keel-agent subagent" "$HOME/.keel/current/method/agents/keel-agent.md" "$(readlink "$HOME/.keel/claude/agents/keel-agent.md")"
 check "and method/, where the router and skills read playbooks by an absolute path" test -f "$HOME/.keel/method/playbooks/issue.md"
 ln -s "$T/gone" "$HOME/.keel/claude/skills/gone"
 out=$("$ROOT/install.sh" --check)
@@ -146,6 +147,83 @@ check "and names the file BROKEN" grep -q "^BROKEN: $live " <<<"$err"
 eq "and leaves the file as it was" '{"permissions": ' "$(cat "$live")"
 echo "$before_broken" >"$live"
 "$ROOT/install.sh" >/dev/null
+
+section "versions"
+# A GitHub served from files: tag archives as GitHub builds them, with one
+# top directory, and the API's newest release.
+GH="$T/github"
+mkdir -p "$GH/web/acme/keel/archive/refs/tags" "$GH/api/repos/acme/keel/releases" "$T/release-src"
+tar -C "$ROOT" --exclude=.git -cf - . | (mkdir -p "$T/release-src/base" && tar -C "$T/release-src/base" -xf -)
+cp -r "$T/release-src/base" "$T/release-src/two"
+echo "TWO RULE: this is the second release." >>"$T/release-src/two/rules/keel.md"
+release() { # release <version> <source dir name>: publish it, and make it the newest
+  tar -C "$T/release-src" -czf "$GH/web/acme/keel/archive/refs/tags/$1.tar.gz" \
+    --transform "s|^$2|keel-${1#v}|" "$2"
+  echo "{\"tag_name\": \"$1\"}" >"$GH/api/repos/acme/keel/releases/latest"
+}
+kv() { KEEL_REPO=acme/keel KEEL_GITHUB="file://$GH/web" KEEL_API="file://$GH/api" "$K" "$@"; }
+rules() { cat "$HOME/.keel/claude/CLAUDE.md"; }
+release v2026.01.01.1 base
+release v2026.01.02.1 two
+# The version before is the checkout, not a release, so pruning has no release to keep for it.
+check "keel update succeeds when the version before is not a release" kv update
+eq "keel update installs the newest release" "v2026.01.02.1" "$(kv version)"
+check "and sessions load its rules" grep -q "TWO RULE" <<<"$(rules)"
+ln -s "$HOME" "$T/home-link"
+eq "keel version names it when HOME is reached through a link" "v2026.01.02.1" "$(HOME="$T/home-link" kv version)"
+eq "through ~/.keel/current" "$HOME/.keel/versions/v2026.01.02.1" "$(readlink "$HOME/.keel/current")"
+check "which a checkout's install.sh --check reports as not current" grep -q "^NOT CURRENT: $HOME/.keel/current -> " <<<"$("$ROOT/install.sh" --check)"
+kv update v2026.01.01.1 >/dev/null
+eq "keel update <version> switches to that one" "v2026.01.01.1" "$(kv version)"
+refute "and its rules replace the newer one's" grep -q "TWO RULE" <<<"$(rules)"
+kv rollback >/dev/null
+eq "keel rollback goes back to the version before" "v2026.01.02.1" "$(kv version)"
+check "with its rules" grep -q "TWO RULE" <<<"$(rules)"
+kv use "$ROOT" >/dev/null
+eq "keel use <checkout> runs sessions on the checkout" "$ROOT (a checkout, through keel use)" "$(kv version)"
+eq "so an edit there is the live file" "$ROOT/rules/keel.md" "$(readlink -f "$HOME/.keel/claude/CLAUDE.md")"
+kv rollback >/dev/null
+eq "and keel rollback leaves it for the release again" "v2026.01.02.1" "$(kv version)"
+refute "a version that was never released fails" kv update v2026.01.03.1
+eq "leaving nothing half unpacked" "$(printf 'v2026.01.0%s.1\n' 1 2)" "$(ls -A "$HOME/.keel/versions")"
+eq "and the version in use as it was" "v2026.01.02.1" "$(kv version)"
+# An archive under a name that is not a version, so only the name check can refuse it.
+cp "$GH/web/acme/keel/archive/refs/tags/v2026.01.01.1.tar.gz" "$GH/web/acme/keel/archive/refs/tags/main.tar.gz"
+refute "a name that is not a version is refused" kv update main
+check "and installs nothing" test ! -e "$HOME/.keel/versions/main"
+# A release from before keel managed ~/.keel/current: its install.sh never takes it over.
+cp -r "$T/release-src/base" "$T/release-src/old" && sed -i '/^switch_current$/d' "$T/release-src/old/install.sh"
+tar -C "$T/release-src" -czf "$GH/web/acme/keel/archive/refs/tags/v2026.01.00.1.tar.gz" --transform "s|^old|keel-2026.01.00.1|" old
+check "a release from before version switching is refused by name" grep -q "predates keel's version switching" <<<"$(kv update v2026.01.00.1 2>&1)"
+eq "and the version in use stays" "v2026.01.02.1" "$(kv version)"
+# Claude Code records each running session as sessions/<pid>.json; this shell stands in for one.
+mkdir -p "$HOME/.keel/claude/sessions" && echo "{\"pid\": $$}" >"$HOME/.keel/claude/sessions/$$.json"
+check "a switch warns when a keel session is running" grep -q "1 keel session(s) running" <<<"$(kv update v2026.01.01.1 2>&1 >/dev/null)"
+eq "keel update switches to a version already downloaded" "v2026.01.01.1" "$(kv version)"
+rm "$HOME/.keel/claude/sessions/$$.json"
+(exit 0) &
+gone=$!
+wait "$gone"
+echo "{\"pid\": $gone}" >"$HOME/.keel/claude/sessions/$gone.json"
+refute "but not for a session that has exited" grep -q "session(s) running" <<<"$(kv update v2026.01.01.1 2>&1 >/dev/null)"
+rm "$HOME/.keel/claude/sessions/$gone.json"
+for d in 03 04 05 06 07; do release "v2026.01.$d.1" base; kv update >/dev/null; done
+eq "keel keeps the newest 5 versions" "$(printf 'v2026.01.%s.1\n' 03 04 05 06 07)" "$(ls "$HOME/.keel/versions")"
+kv update v2026.01.01.1 >/dev/null
+eq "and the one in use, however old" "$(printf 'v2026.01.%s.1\n' 01 03 04 05 06 07)" "$(ls "$HOME/.keel/versions")"
+release v2026.01.08.1 base
+kv update >/dev/null
+kv rollback >/dev/null
+eq "and the one keel rollback goes back to" "v2026.01.01.1" "$(kv version)"
+check "bootstrap.sh succeeds on a new machine, with no version before" \
+  env HOME="$T/fresh" KEEL_REPO=acme/keel KEEL_GITHUB="file://$GH/web" KEEL_API="file://$GH/api" "$ROOT/bootstrap.sh"
+eq "bootstrap.sh installs the newest release on a new machine" "$T/fresh/.keel/versions/v2026.01.08.1" "$(readlink "$T/fresh/.keel/current")"
+check "with starter files in ~/.keel/you" test -f "$T/fresh/.keel/you/CLAUDE.md"
+"$ROOT/install.sh" >/dev/null
+eq "running a checkout's install.sh makes it current again" "$ROOT" "$(readlink "$HOME/.keel/current")"
+"$HOME/.keel/current/install.sh" >/dev/null
+eq "and running it through ~/.keel/current leaves current on the real path" "$ROOT" "$(readlink "$HOME/.keel/current")"
+check "where --check is clean" "$HOME/.keel/current/install.sh" --check
 
 section "keel claude"
 out=$("$K" claude --resume "two words")

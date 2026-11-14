@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Point every live path keel owns at its file in this repository, so editing
-# the live path edits the repository, and the personal paths at ~/.keel/you.
+# Make this copy of keel the one every session runs: point ~/.keel/current at
+# it, and every live path keel owns at its file through ~/.keel/current, so
+# the next switch is that one link. The personal paths point at ~/.keel/you.
 # Idempotent: safe to re-run, and re-running repairs a link an application
-# replaced with a regular file.
+# replaced with a regular file. `keel update`, `keel rollback` and `keel use`
+# all switch by running the target copy's install.sh.
 #
 #   install.sh            link everything
 #   install.sh --check    report drift without changing anything
@@ -17,12 +19,16 @@
 # writes to that file itself.
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The real path, so running ~/.keel/current/install.sh never points current at itself.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CONFIG="$HOME/.keel/claude"
 YOU="$HOME/.keel/you"
 # The keel settings last merged into the user's, so the next merge knows which
 # entries are keel's to take out.
 MERGED="$HOME/.keel/rails.json"
+# The copy of keel sessions run, and the one it replaced, for `keel rollback`.
+CURRENT="$HOME/.keel/current"
+PREVIOUS="$HOME/.keel/previous"
 MODE="link"
 DRIFT=0
 
@@ -32,13 +38,13 @@ usage() {
 }
 
 PAIRS=(
-  "$ROOT/rules/keel.md|$CONFIG/CLAUDE.md"
+  "$CURRENT/rules/keel.md|$CONFIG/CLAUDE.md"
   "$YOU/OPINIONS.md|$CONFIG/OPINIONS.md"
   "$YOU/VOICE.md|$CONFIG/VOICE.md"
   "$YOU/settings.json|$CONFIG/settings.json"
-  "$ROOT/rails/bin/keel|$HOME/.local/bin/keel"
-  "$ROOT/method|$HOME/.keel/method"
-  "$ROOT/trust|$HOME/.keel/trust"
+  "$CURRENT/rails/bin/keel|$HOME/.local/bin/keel"
+  "$CURRENT/method|$HOME/.keel/method"
+  "$CURRENT/trust|$HOME/.keel/trust"
 )
 
 # Each skill and agent is linked on its own into real directories, so what
@@ -48,11 +54,11 @@ method_pairs() {
   for s in "$ROOT"/method/skills/*/ "$ROOT"/trust/skills/*/ "$ROOT"/learning/skills/*/; do
     [[ -f "$s/SKILL.md" ]] || continue
     s="${s%/}"
-    echo "$s|$CONFIG/skills/$(basename "$s")"
+    echo "$CURRENT/${s#"$ROOT"/}|$CONFIG/skills/$(basename "$s")"
   done
   for a in "$ROOT"/method/agents/*.md; do
     [[ -f "$a" ]] || continue
-    echo "$a|$CONFIG/agents/$(basename "$a")"
+    echo "$CURRENT/${a#"$ROOT"/}|$CONFIG/agents/$(basename "$a")"
   done
 }
 
@@ -149,6 +155,27 @@ merge_settings() {
   echo "merged   keel's settings into $live"
 }
 
+# Swaps ~/.keel/current to this copy in one rename, so no session ever sees it
+# missing, and keeps the copy it replaced as ~/.keel/previous.
+switch_current() {
+  local was tmp
+  was=$(readlink "$CURRENT" 2>/dev/null) || was=""
+  [[ "$was" == "$ROOT" ]] && return
+  if [[ "$MODE" == check ]]; then
+    echo "NOT CURRENT: $CURRENT -> ${was:-nothing}, not $ROOT"
+    DRIFT=$((DRIFT + 1))
+    return
+  fi
+  mkdir -p "$(dirname "$CURRENT")"
+  if [[ -n "$was" ]]; then
+    tmp="$PREVIOUS.$$"
+    ln -sfn "$was" "$tmp" && mv -T "$tmp" "$PREVIOUS"
+  fi
+  tmp="$CURRENT.$$"
+  ln -sfn "$ROOT" "$tmp" && mv -T "$tmp" "$CURRENT"
+  echo "current  $CURRENT -> $ROOT"
+}
+
 case "${1:-}" in
 -h | --help) usage 0 ;;
 --check) MODE=check ;;
@@ -166,6 +193,7 @@ else
   "$ROOT/rails/bin/keel" init
 fi
 [[ -f "$YOU/settings.json" ]] && merge_settings
+switch_current
 
 for pair in "${PAIRS[@]}"; do
   link_one "${pair%%|*}" "${pair##*|}"
