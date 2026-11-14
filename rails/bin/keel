@@ -1573,17 +1573,21 @@ merge_pr() { # merge_pr <squash|commit> [PR number]
   esac
 }
 
-# `keel dash` writes keel stats into one self-contained page and opens it,
-# leaving nothing running. Every < in the data is escaped, so no text
-# from a run can end the script tag that holds it.
+# `keel dash` writes keel stats, and the text of each skill they name, into
+# one self-contained page and opens it, leaving nothing running. Every < in
+# the data is escaped, so no text from a run or a skill can end the script
+# tag that holds it.
 dash() { # dash [keel stats options]
-  local page="$STATE_DIR/dash.html" json opener
+  local page="$STATE_DIR/dash.html" json texts opener
   json=$(python3 -I "$LIB_DIR/stats.py" "$STATE_DIR" "$HOME/.keel/claude" "$METHOD_DIR" --json "$@") || exit $?
+  texts=$(python3 -I "$LIB_DIR/stats.py" "$STATE_DIR" "$HOME/.keel/claude" "$METHOD_DIR" --texts) || exit $?
   mkdir -p "$STATE_DIR"
   {
     sed '/^__STATS__$/,$d' "$LIB_DIR/dash.html"
     jq -c . <<<"$json" | sed 's/</\\u003c/g'
-    sed '1,/^__STATS__$/d' "$LIB_DIR/dash.html"
+    sed '1,/^__STATS__$/d;/^__TEXTS__$/,$d' "$LIB_DIR/dash.html"
+    jq -c . <<<"$texts" | sed 's/</\\u003c/g'
+    sed '1,/^__TEXTS__$/d' "$LIB_DIR/dash.html"
   } | write_atomic "$page"
   echo "$page"
   # On a server reached over SSH, a tethered laptop's browser is the one to

@@ -1253,6 +1253,9 @@ section "dash"
 tagged="$SD/keel/runs/archive/-work-app/2026-11-12T09:00:00Z"
 mkdir -p "$tagged"
 echo '{"playbook":"bug-fix","tree":"/work/app","state":"done","started_at":"2026-11-12T09:00:00Z","steps":[{"title":"</script><b>x</b>","state":"done"}]}' >"$tagged/status.json"
+# And a skill whose text would do the same.
+mkdir -p "$HOME/.keel/claude/skills/tagged"
+printf -- '---\nname: tagged\ndescription: "Quoted: </script>"\n---\n\n</script><b>x</b>\n' >"$HOME/.keel/claude/skills/tagged/SKILL.md"
 printf '#!/bin/sh\necho "$@" >>"%s/opened"\n' "$T" >"$T/stubs/xdg-open" && chmod +x "$T/stubs/xdg-open"
 fetch() { python3 -I -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=5).read())' "$1"; }
 # A tether whose laptop is connected only while $T/tethered exists, and whose
@@ -1273,7 +1276,14 @@ eq "keel dash writes its page under the state folder and prints where" "$SD/keel
 eq "and opens it" "$page" "$(cat "$T/opened")"
 eq "with keel stats embedded in it" "$(ks --json | jq -cS 'del(.transcripts)')" \
   "$(sed -n '/<script id="stats"/,/<\/script>/p' "$page" | sed '1d;$d' | jq -cS 'del(.transcripts)')"
-eq "and no text from a run can end its script tag" "2" "$(grep -o '</script' "$page" | wc -l | tr -d ' ')"
+eq "and no text from a run or a skill can end its script tag" "3" "$(grep -o '</script' "$page" | wc -l | tr -d ' ')"
+embedded() { sed -n "/<script id=\"$1\"/,/<\/script>/p" "$page" | sed '1d;$d'; } # embedded <id>: the JSON in that script tag
+eq "beside the stats, it holds each skill's text after its front matter" "$(grep -m1 '^# ' "$ROOT/trust/skills/verify/SKILL.md")" "$(embedded texts | jq -r '.verify.text' | head -1)"
+eq "with the skill's description as its lead" "$(sed -n 's/^description: //p' "$ROOT/trust/skills/verify/SKILL.md")" "$(embedded texts | jq -r '.verify.lead')"
+eq "a step that names no skill holds its line from the playbook" "$(sed -n 's/^1\. //p' "$ROOT/method/playbooks/bug-fix.md")" "$(embedded texts | jq -r '."bug-fix step 1".text')"
+eq "the router holds method/router.md" "$(cat "$ROOT/method/router.md")" "$(embedded texts | jq -r '.router.text')"
+eq "and a skill's text that would end the script tag arrives as written" "</script><b>x</b>" "$(embedded texts | jq -r '.tagged.text')"
+eq "with a quoted description shown without its quotes" "Quoted: </script>" "$(embedded texts | jq -r '.tagged.lead')"
 XDG_STATE_HOME="$SD" "$K" dash --repo late >/dev/null
 eq "it passes --since and --repo on to keel stats" "$(ks --json --repo late | jq -cS '.skills | map(.name)')" \
   "$(sed -n '/<script id="stats"/,/<\/script>/p' "$page" | sed '1d;$d' | jq -cS '.skills | map(.name)')"
@@ -1315,7 +1325,7 @@ eq "with no browser to open it, it still exits 0" "0" "$?"
 check "and prints the path" grep -qxF "$SD/keel/dash.html" <<<"$out"
 check "saying to open it by hand" grep -q "open the path above in a browser" <<<"$out"
 rm -f "$T/stubs/xdg-open" "$T/stubs/tether" "$T/opened"
-rm -rf "$HOME/.keel/claude/projects"
+rm -rf "$HOME/.keel/claude/projects" "$HOME/.keel/claude/skills/tagged"
 
 section "reflect"
 # Recorded synthesizer output: findings at three levels, out of order, and

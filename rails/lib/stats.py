@@ -15,6 +15,10 @@ subagent counts toward the step its first message falls in. Each transcript's
 totals are cached by its size and mtime, so a second run reads only new ones.
 
     python3 -I stats.py <state dir> <claude dir> <method dir> [--json] [--since YYYY-MM-DD] [--repo NAME]
+
+`--texts` prints, instead of the counts, the text `keel dash` shows beside
+each name: a skill's SKILL.md, a step's line from its playbook, and the
+router's method/router.md.
 """
 
 import argparse
@@ -439,6 +443,44 @@ def skill_of(playbook: str, step: int, steps: dict[str, dict[int, str]]) -> str:
     return m.group(1) if m and m.group(1) != "verify" else f"{playbook} step {step}"
 
 
+class Text(TypedDict):
+    """What `keel dash` shows of a skill: its description and its Markdown."""
+
+    lead: str
+    text: str
+
+
+def front_matter(body: str) -> tuple[str, str]:
+    """A SKILL.md's description and the Markdown after its front matter."""
+    if body.startswith("---\n") and (end := body.find("\n---\n", 3)) != -1:
+        m = re.search(r"^description:[ \t]*(.*)$", body[4:end], re.M)
+        lead = m.group(1).strip() if m else ""
+        if len(lead) > 1 and lead[0] == lead[-1] and lead[0] in "\"'":
+            lead = lead[1:-1]
+        return lead, body[end + 5:].strip()
+    return "", body.strip()
+
+
+def texts(claude_dir: str, method_dir: str) -> dict[str, Text]:
+    """The text of every name keel stats can list: each installed skill, each
+    playbook step counted as its own, and the router."""
+    out: dict[str, Text] = {}
+    for path in sorted(glob.glob(os.path.join(claude_dir, "skills", "*", "SKILL.md"))):
+        with open(path) as f:
+            lead, body = front_matter(f.read())
+        out[os.path.basename(os.path.dirname(path))] = {"lead": lead, "text": body}
+    all_steps = playbook_steps(method_dir)
+    for playbook, steps in all_steps.items():
+        for n, line in steps.items():
+            if (name := skill_of(playbook, n, all_steps)) == f"{playbook} step {n}":
+                out[name] = {"lead": "", "text": line}
+    router = os.path.join(method_dir, "router.md")
+    if os.path.isfile(router):
+        with open(router) as f:
+            out["router"] = {"lead": "", "text": f.read().strip()}
+    return out
+
+
 def in_repo(path: str, repo: str | None) -> bool:
     return repo is None or repo in path.split(os.sep)
 
@@ -712,7 +754,11 @@ def main() -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--since", type=lambda s: dt.date.fromisoformat(s).isoformat())
     p.add_argument("--repo")
+    p.add_argument("--texts", action="store_true", help="print each listed name's text for keel dash, not the counts")
     args = p.parse_args()
+    if args.texts:
+        print(json.dumps(texts(str(args.claude_dir), str(args.method_dir))))
+        return 0
     # argparse types every attribute as Any; these are the types its arguments declare.
     since: str | None = args.since
     repo: str | None = args.repo

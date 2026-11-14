@@ -97,6 +97,30 @@ tr.on { background: var(--sel); }
 footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
 .view { display: flex; flex-direction: column; gap: 20px; }
 .hidden { display: none !important; }
+.textcard { display: flex; flex-direction: column; gap: 10px; }
+.textcard .head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
+.textcard .src { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.textcard .lead { max-width: 820px; font-size: 13px; color: var(--body); }
+.md { max-height: 560px; overflow-y: auto; overflow-wrap: break-word; border: 1px solid var(--line-soft); border-radius: 10px; padding: 18px 24px; background: var(--bg); font-size: 14px; line-height: 1.6; }
+.md:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.md > * { max-width: 820px; }
+.md h1, .md h2, .md h3, .md h4 { font-weight: 600; }
+.md h1 { font-size: 15px; margin: 0 0 8px; }
+.md h2 { font-size: 14px; margin: 16px 0 6px; }
+.md h3, .md h4 { font-size: 13px; margin: 14px 0 6px; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md .tbl { margin: 0 0 10px; }
+.md ul, .md ol { padding-left: 20px; }
+.md li { margin: 0 0 4px; }
+.md li > ul, .md li > ol { margin: 4px 0 0; }
+.md code { font: 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--track); padding: 1px 4px; border-radius: 4px; }
+.md pre { padding: 10px 12px; background: var(--track); border-radius: 8px; overflow-x: auto; line-height: 1.45; }
+.md pre code { padding: 0; background: none; white-space: pre; }
+.md .tbl { overflow-x: auto; }
+.md table { font-size: 12px; }
+.md th, .md td { border: 1px solid var(--line); padding: 6px 8px; vertical-align: top; white-space: normal; color: var(--ink); }
+.md th { font-weight: 600; background: var(--track); }
 </style>
 </head>
 <body>
@@ -166,6 +190,7 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line)
       </div>
       <aside class="card side" id="detail" style="display: flex; flex-direction: column; gap: 18px"></aside>
     </div>
+    <section class="card textcard hidden" id="skill-text" aria-labelledby="skill-text-title"></section>
   </section>
 
   <section id="view-scripts" data-view="scripts" class="view hidden">
@@ -184,9 +209,13 @@ footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line)
 <script id="stats" type="application/json">
 __STATS__
 </script>
+<script id="texts" type="application/json">
+__TEXTS__
+</script>
 <script>
 "use strict";
 const S = JSON.parse(document.getElementById("stats").textContent);
+const T = JSON.parse(document.getElementById("texts").textContent);
 
 // Thresholds behind "Where to adjust"; fixed, so the list moves only when the numbers do.
 const MIN_RUNS = 3;            // a skill needs this many runs before its per-run figures are ranked
@@ -343,7 +372,9 @@ function renderSkills() {
       el("td", {class: "nowrap", style: "font-size: 12px; color: " + (rerunText(s) === "none" ? "var(--muted)" : "var(--orange-ink)")}, rerunText(s)),
       el("td", {}, top.length ? el("span", {class: "pill", title: top.join(", ")}, top[0] + (top.length > 1 ? " +" + (top.length - 1) : "")) : "-")));
   }
-  renderDetail(skills.find(s => s.name === state.sel));
+  const sel = skills.find(s => s.name === state.sel);
+  renderDetail(sel);
+  renderText(sel);
 }
 function renderDetail(s) {
   const host = document.getElementById("detail");
@@ -374,6 +405,105 @@ function renderDetail(s) {
   for (const [a, k] of Object.entries(s.subagents)) who.append(el("span", {}, k + " × " + a), el("span", {class: "mono"}, "subagent"));
   kids.push(el("div", {style: "display: flex; flex-direction: column; gap: 8px"}, el("h3", {}, "Who did the work"), who,
     el("p", {class: "sub", style: "font-size: 12px"}, Object.keys(s.models).length > 1 ? "Each model's share of this skill's tokens; compare its runs, time and reruns once both have enough runs." : "One model did all of this skill's work, so there is nothing to compare yet.")));
+  host.replaceChildren(...kids);
+}
+// A skill's text, from Markdown into DOM nodes. Every piece of it reaches
+// the page through text nodes, never innerHTML, so text that looks like HTML
+// shows as written.
+function inline(s) {
+  const out = [], re = /(`+)([\s\S]*?)\1|\*\*(.+?)\*\*/g;
+  let at = 0, m;
+  while ((m = re.exec(s))) {
+    if (m.index > at) out.push(s.slice(at, m.index));
+    out.push(m[1] ? el("code", {}, m[2]) : el("b", {}, inline(m[3])));
+    at = re.lastIndex;
+  }
+  if (at < s.length) out.push(s.slice(at));
+  return out;
+}
+const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const cells = line => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, "|"));
+const blockStart = (line, next) => /^\s*(```|~~~)|^#{1,6}\s/.test(line) || LIST_ITEM.test(line) || (/^\s*\|/.test(line) && TABLE_RULE.test(next || ""));
+const indentOf = line => line.length - line.trimStart().length;
+// One list from lines[i], with its nested lists; returns it and the line after it.
+function list(lines, i) {
+  const first = LIST_ITEM.exec(lines[i]), indent = first[1].length, start = parseInt(first[2], 10);
+  const node = el(isNaN(start) ? "ul" : "ol", start > 1 ? {start: String(start)} : {});
+  while (i < lines.length) {
+    const m = LIST_ITEM.exec(lines[i]);
+    if (!m || m[1].length !== indent || isNaN(parseInt(m[2], 10)) !== isNaN(start)) break;
+    const words = [m[3]], nested = [];
+    for (i++; i < lines.length;) {
+      const line = lines[i], sub = LIST_ITEM.exec(line);
+      if (!line.trim()) {
+        // A blank line ends the item unless what follows is indented under it or is the next item.
+        let j = i;
+        while (j < lines.length && !lines[j].trim()) j++;
+        const next = LIST_ITEM.exec(lines[j] || "");
+        if (j < lines.length && indentOf(lines[j]) > indent) { i = j; continue; }
+        if (next && next[1].length === indent) i = j;
+        break;
+      }
+      if (sub && sub[1].length > indent) { const [n, j] = list(lines, i); nested.push(n); i = j; continue; }
+      if (sub || indentOf(line) <= indent) break;
+      words.push(line.trim());
+      i++;
+    }
+    node.append(el("li", {}, inline(words.join(" ")), nested));
+  }
+  return [node, i];
+}
+function markdown(src) {
+  const lines = src.replace(/\r\n?/g, "\n").split("\n"), out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    let m;
+    if (!line.trim()) { i++; continue; }
+    if ((m = /^\s*(```+|~~~+)/.exec(line))) {
+      const body = [];
+      for (i++; i < lines.length && !lines[i].trimStart().startsWith(m[1]); i++) body.push(lines[i]);
+      out.push(el("pre", {}, el("code", {}, body.join("\n"))));
+      i++;
+    } else if ((m = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line))) {
+      out.push(el("h" + Math.min(m[1].length, 4), {}, inline(m[2])));
+      i++;
+    } else if (/^\s*\|/.test(line) && TABLE_RULE.test(lines[i + 1] || "")) {
+      const table = el("table", {}, el("tr", {}, cells(line).map(c => el("th", {}, inline(c)))));
+      for (i += 2; i < lines.length && /^\s*\|/.test(lines[i]); i++) table.append(el("tr", {}, cells(lines[i]).map(c => el("td", {}, inline(c)))));
+      out.push(el("div", {class: "tbl"}, table));
+    } else if (LIST_ITEM.test(line)) {
+      const [node, j] = list(lines, i);
+      out.push(node);
+      i = j;
+    } else {
+      const words = [line.trim()];
+      for (i++; i < lines.length && lines[i].trim() && !blockStart(lines[i], lines[i + 1]); i++) words.push(lines[i].trim());
+      out.push(el("p", {}, inline(words.join(" "))));
+    }
+  }
+  return out;
+}
+function textSource(name) {
+  const step = /^(.+) step (\d+)$/.exec(name);
+  return name === "router" ? "method/router.md" : step ? "method/playbooks/" + step[1] + ".md, step " + step[2] : "~/.keel/claude/skills/" + name + "/SKILL.md";
+}
+function renderText(s) {
+  const host = document.getElementById("skill-text");
+  host.classList.toggle("hidden", !s);
+  if (!s) return;
+  const t = Object.hasOwn(T, s.name) ? T[s.name] : null, source = textSource(s.name);
+  const kids = [el("div", {class: "head"},
+    el("h2", {id: "skill-text-title"}, "What ", el("span", {class: "mono"}, s.name), " says"),
+    el("span", {class: "src mono"}, source))];
+  if (!t) {
+    kids.push(el("div", {class: "empty", role: "status"}, el("div", {}, el("b", {style: "display: block; font-weight: 600; color: var(--ink)"}, "No text to show"),
+      "Nothing at ", el("span", {class: "mono", style: "font-size: 12px"}, source), ". It may have been removed or renamed since these runs.")));
+  } else {
+    if (t.lead) kids.push(el("p", {class: "lead"}, t.lead));
+    kids.push(el("div", {class: "md", tabindex: "0", role: "region", "aria-label": s.name + "'s text"}, markdown(t.text)));
+  }
   host.replaceChildren(...kids);
 }
 renderSkills();
