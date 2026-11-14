@@ -8,11 +8,23 @@ Until then it never writes a harness path: a keel session runs through `keel cla
 ## Install
 
 ```sh
-git clone git@github.com:anthonyb8/keel.git ~/keel
-~/keel/install.sh            # link keel's files into ~/.keel/claude and ~/.local/bin/keel, and make ~/.keel/you
-~/keel/install.sh --check    # report drift without changing anything
+curl -fsSL https://raw.githubusercontent.com/anthonyb8/keel/main/bootstrap.sh | bash
 keel claude                  # then /login once in this session
 ```
+
+Every merge to `main` is released as `v<YYYY>.<MM>.<DD>.<n>`, and sessions run whichever version `~/.keel/current` points at:
+
+```sh
+keel version                 # the version sessions run
+keel update [version]        # download the newest release, or that one, and switch to it
+keel rollback                # switch back to the version in use before the last switch
+keel use ~/keel              # develop keel: run sessions on a checkout, so its edits are live
+keel use <version>           # and back to a release
+~/.keel/current/install.sh --check   # report drift without changing anything
+```
+
+A switch runs the target's own `install.sh`, which swaps `~/.keel/current` in one rename, merges its settings and relinks its skills.
+`~/.keel/versions` keeps the newest 5 releases, and whichever is in use or was before it.
 
 `~/.keel/you` holds your own rules (`CLAUDE.md`), `VOICE.md`, `OPINIONS.md` and `settings.json`.
 `keel init`, which `install.sh` runs, makes it from `templates/you/` and keeps any file already there, with a local git history and no remote.

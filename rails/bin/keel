@@ -4,6 +4,11 @@
 #   keel claude [args]        run claude on keel's config dir, ~/.keel/claude
 #   keel init                 make ~/.keel/you, the user's own rules, voice, opinions and
 #                             settings, from templates/you; a file already there is kept
+#   keel version              print the version sessions run, or the checkout's path under keel use
+#   keel update [version]     download a release (default: the newest) into ~/.keel/versions and
+#                             switch to it; the newest 5 are kept
+#   keel rollback             switch back to the version in use before the last switch
+#   keel use <path|version>   switch to a checkout, such as ~/keel to develop keel, or a release
 #   keel pack [dir]           print the pack that owns dir (default: the current directory)
 #   keel base [dir]           print the base branch that pack names, if any
 #   keel protected [dir]      print the branches no session may move: the base, the default
@@ -80,6 +85,13 @@ TEMPLATES_DIR="$KEEL_ROOT/templates"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 KEEP_FILE="${KEEL_KEEP:-$HOME/.config/keel/keep}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/keel"
+# Releases come from this repository on GitHub; KEEL_REPO, KEEL_GITHUB and
+# KEEL_API point keel at a fork or a mirror.
+KEEL_REPO="${KEEL_REPO:-anthonyb8/keel}"
+KEEL_GITHUB="${KEEL_GITHUB:-https://github.com}"
+KEEL_API="${KEEL_API:-https://api.github.com}"
+VERSIONS_DIR="$HOME/.keel/versions"
+VERSIONS_KEPT=5
 RUNS_DIR="$STATE_DIR/runs"
 STALE_FILE="$STATE_DIR/stale"
 VERDICTS_DIR="$STATE_DIR/verdicts"
@@ -797,6 +809,95 @@ init() {
   fi
 }
 
+version() {
+  local current
+  current=$(readlink "$HOME/.keel/current") || die "no ~/.keel/current; run install.sh from a keel checkout"
+  # -ef, since install.sh records the real path and $HOME may not be one.
+  if [[ "$(dirname "$current")" -ef "$VERSIONS_DIR" ]]; then
+    basename "$current"
+  else
+    echo "$current (a checkout, through keel use)"
+  fi
+}
+
+# Every switch runs the target copy's own install.sh, which swaps
+# ~/.keel/current, merges that copy's settings and relinks its skills. A
+# running session keeps what it already loaded and reads every file it has not
+# yet from the new copy, so it is told rather than stopped.
+switch_to() {
+  local dir="$1" f pid live=0
+  [[ -x "$dir/install.sh" ]] || die "$dir is not a keel copy: it has no install.sh"
+  for f in "$HOME"/.keel/claude/sessions/*.json; do
+    [[ -f "$f" ]] || continue
+    pid=$(jq -r '.pid // empty' "$f" 2>/dev/null) || continue
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && live=$((live + 1))
+  done
+  ((live == 0)) || echo "warning: $live keel session(s) running; each reads keel's files from the new version from now on" >&2
+  "$dir/install.sh"
+  # A release from before keel managed ~/.keel/current links straight to itself.
+  [[ "$HOME/.keel/current" -ef "$dir" ]] ||
+    die "$dir did not take over ~/.keel/current, so it predates keel's version switching; switch to a newer one"
+}
+
+update() {
+  local v="${1:-}" tmp
+  if [[ -z "$v" ]]; then
+    v=$(curl -fsSL "$KEEL_API/repos/$KEEL_REPO/releases/latest" | jq -r '.tag_name // empty') ||
+      die "could not read keel's newest release from $KEEL_API/repos/$KEEL_REPO/releases/latest"
+  fi
+  [[ "$v" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] || die "not a keel version: ${v:-nothing}"
+  if [[ ! -d "$VERSIONS_DIR/$v" ]]; then
+    mkdir -p "$VERSIONS_DIR"
+    # Unpacked beside its final name and renamed only once complete, so an
+    # interrupted download never leaves a half version to switch to.
+    tmp=$(mktemp -d "$VERSIONS_DIR/.$v.XXXXXX")
+    if ! curl -fsSL "$KEEL_GITHUB/$KEEL_REPO/archive/refs/tags/$v.tar.gz" | tar -xz -C "$tmp" --strip-components=1; then
+      rm -rf -- "$tmp"
+      die "could not download keel $v from $KEEL_GITHUB/$KEEL_REPO"
+    fi
+    mv -T "$tmp" "$VERSIONS_DIR/$v"
+  fi
+  switch_to "$VERSIONS_DIR/$v"
+  prune_versions
+}
+
+# Keeps the newest VERSIONS_KEPT releases, and whichever current and previous
+# point at, so a rollback always has somewhere to go.
+prune_versions() {
+  local keep v l
+  local -a all=()
+  for v in "$VERSIONS_DIR"/v*; do
+    [[ -d "$v" ]] && all+=("${v##*/}")
+  done
+  keep=$(
+    printf '%s\n' "${all[@]}" | sort -V | tail -n "$VERSIONS_KEPT"
+    for l in current previous; do
+      # An if, not a bare &&: a false last test would fail this substitution and, under set -e, keel.
+      if v=$(readlink "$HOME/.keel/$l") && [[ "$(dirname "$v")" -ef "$VERSIONS_DIR" ]]; then basename "$v"; fi
+    done
+  )
+  for v in "${all[@]}"; do
+    grep -qxF "$v" <<<"$keep" || rm -rf -- "${VERSIONS_DIR:?}/$v"
+  done
+}
+
+rollback() {
+  local previous
+  previous=$(readlink "$HOME/.keel/previous") || die "no version to roll back to: nothing has switched yet"
+  [[ -d "$previous" ]] || die "the previous version, $previous, is gone"
+  switch_to "$previous"
+}
+
+use() {
+  local target="${1:-}"
+  [[ -n "$target" ]] || die "usage: keel use <path|version>"
+  if [[ -d "$target" ]]; then
+    switch_to "$(cd "$target" && pwd -P)"
+  else
+    update "$target"
+  fi
+}
+
 # A pack's template replaces the core's of the same name rather than merging
 # into it, like provision, so a pack can put its own sections where they belong
 # instead of appending them.
@@ -1464,6 +1565,10 @@ shift
 case "$cmd" in
 claude) CLAUDE_CONFIG_DIR="$HOME/.keel/claude" exec claude "$@" ;;
 init) init ;;
+version) version ;;
+update) update "$@" ;;
+rollback) rollback ;;
+use) use "$@" ;;
 pack) pack_for "${1:-$PWD}" ;;
 base) base_for "${1:-$PWD}" ;;
 protected) protected_for "${1:-$PWD}" ;;
