@@ -1339,8 +1339,14 @@ for p in "$EV"/*/; do
   [[ -f "$EV/$p/prompt.md" ]] || continue
   d="$BL/$p"
   mkdir -p "$d"
-  work=$(cd "$T" && KEEL_BIN="$K" "$EV/$p/fixture.sh" "$d" 2>/dev/null)
-  check "the $p fixture builds a repository with a bare origin" built "$work" "$d"
+  work=$(cd "$T" && KEEL_BIN="$K" "$EV/$p/fixture.sh" "$d" 2>"$T/ev-$p.log")
+  # An unbuilt fixture leaves nothing to read, and an empty $work would read
+  # the history of the directory the suite runs from.
+  if ! built "$work" "$d"; then
+    fail "the $p fixture builds a repository with a bare origin" "$(tail -n 3 "$T/ev-$p.log" | paste -sd' ')"
+    continue
+  fi
+  pass "the $p fixture builds a repository with a bare origin"
   # The blinding a session sees: every path the fixture made, every file's
   # text outside .git, the commit messages and authors, and the prompt.
   seen=$({
@@ -1354,12 +1360,56 @@ done
 rm -rf "$BL"
 
 # Recorded results, good and bad, against each playbook's scripted checks.
-fresh() { # fresh <playbook> -> a newly built fixture's work dir
-  local d
-  d=$(mktemp -d "$T/ev-$1.XXXX")
-  (cd "$T" && KEEL_BIN="$K" "$EV/$1/fixture.sh" "$d" 2>/dev/null)
+fresh() { # fresh <playbook>: builds a fixture into $w, else fails the case and returns 1
+  # $w must be its own repository's top level under $T: an empty or stray path
+  # would point the case's git commands at the directory the suite runs from.
+  local d top log="$T/ev-$1.log"
+  w=
+  if d=$(mktemp -d "$T/ev-$1.XXXX" 2>"$log") &&
+    w=$(cd "$T" && KEEL_BIN="$K" "$EV/$1/fixture.sh" "$d" 2>>"$log") &&
+    [[ -n "$w" ]] && top=$(git -C "$w" rev-parse --show-toplevel 2>>"$log") &&
+    [[ "$top" == "$(cd "$w" && pwd -P)" && "$top" == "$(cd "$T" && pwd -P)"/* ]]; then
+    return 0
+  fi
+  fail "the $1 fixture builds" "$(tail -n 3 "$log" 2>/dev/null | paste -sd' ' | grep . || echo "printed [$w], not a repository of its own under \$T")"
+  w=
+  return 1
 }
 reply() { printf '%s\n' "$1" >"$T/reply.md"; echo "$T/reply.md"; }
+
+# A fixture that cannot be built fails its case, and the case's git commands
+# never reach the repository the suite was started from (ANB-80). Run in a
+# subshell, from a repository outside $T standing in for that checkout, so the
+# failure it records stays out of this suite's count.
+HB=$(mktemp -d "${TMPDIR:-/tmp}/started.XXXXXX")
+HERE="$HB/here"
+git init -q --bare -b main "$HB/origin.git"
+git clone -q "$HB/origin.git" "$HERE" 2>/dev/null
+echo work >"$HERE/notes.md"
+git -C "$HERE" add notes.md && git -C "$HERE" commit -q -m "work" && git -C "$HERE" push -q origin HEAD 2>/dev/null
+echo "uncommitted" >>"$HERE/notes.md"
+here() { git -C "$HERE" status --porcelain=v2 --branch; git -C "$HERE" for-each-ref; git -C "$HB/origin.git" for-each-ref; }
+BE="$T/broken-evals"
+mkdir -p "$BE/full" "$BE/stray" "$BE/nested"
+# full fails as a full disk does; stray names a repository outside $T, as the
+# checkout is; nested names a directory inside a repository, not its top.
+printf '#!/bin/sh\necho "mkdir: No space left on device" >&2\nexit 1\n' >"$BE/full/fixture.sh"
+printf '#!/bin/sh\necho "%s"\n' "$HERE" >"$BE/stray/fixture.sh"
+printf '#!/bin/sh\ngit init -q "$1/repo" && mkdir "$1/repo/lib" && echo "$1/repo/lib"\n' >"$BE/nested/fixture.sh"
+chmod +x "$BE"/*/fixture.sh
+was=$(here)
+for p in full stray nested; do
+  out=$(cd "$HERE" && EV="$BE" && if fresh "$p"; then
+    echo "case ran"
+    git -C "$w" switch -q -c freeship && git -C "$w" commit -qam FREESHIP && git -C "$w" push -q origin HEAD:freeship
+  fi 2>/dev/null)
+  check "an unbuilt $p fixture fails its case, naming the fixture" grep -q "FAIL  the $p fixture builds" <<<"$out"
+  refute "and the rest of the case does not run" grep -q "case ran" <<<"$out"
+  eq "and the repository the suite started from is unchanged" "$was" "$(here)"
+  [[ "$p" == full ]] && check "the failure carries the fixture's own error" grep -q "No space left on device" <<<"$out"
+done
+rm -rf "$HB" "$BE"
+
 dedupe='cart_total() {\n  local file="$1" total=0 sku price qty code seen=" "\n  shift\n  while read -r sku price qty; do\n    [ -n "$sku" ] || continue\n    total=$((total + price * qty))\n  done <"$file"\n  for code in "$@"; do\n    case "$seen" in *" $code "*) continue ;; esac\n    seen="$seen$code "\n    total=$((total - $(discount_for "$code" "$total")))\n  done\n  echo "$total"\n}\n'
 fix_cart() { # fix_cart <work>: applies each code once
   python3 - "$1/lib/cart.sh" "$dedupe" <<'PY'
@@ -1372,71 +1422,81 @@ PY
 }
 twice_spec='. "$(dirname "$0")/../lib/cart.sh"\n[ "$(printf "mug 1200 1\\n" | cart_total /dev/stdin SAVE5 SAVE5)" = 700 ] || { echo twice; exit 1; }\n'
 
-w=$(fresh bug-fix)
-fix_cart "$w"
-printf '%b' "$twice_spec" >"$w/specs/twice_spec.sh"
-check "bug-fix: a fix with a spec that fails before it passes the checks" "$EV/bug-fix/checks.sh" "$w" "$(reply ok)"
+if fresh bug-fix; then
+  fix_cart "$w"
+  printf '%b' "$twice_spec" >"$w/specs/twice_spec.sh"
+  check "bug-fix: a fix with a spec that fails before it passes the checks" "$EV/bug-fix/checks.sh" "$w" "$(reply ok)"
+fi
 # A session works in a worktree of its own, as keel's rules have it, and the
 # checks run there: the fixture's origin is found from the tree's remote.
-w=$(fresh bug-fix)
-git -C "$w" worktree add -q -b fix/twice "$T/elsewhere-tree" 2>/dev/null
-fix_cart "$T/elsewhere-tree"
-printf '%b' "$twice_spec" >"$T/elsewhere-tree/specs/twice_spec.sh"
-check "bug-fix: the checks pass in the worktree a session worked in" "$EV/bug-fix/checks.sh" "$T/elsewhere-tree" "$(reply ok)"
-w=$(fresh issue)
-git -C "$w" worktree add -q -b shop-12 "$T/issue-tree" 2>/dev/null
-check "issue: and find the fixture's origin from a worktree, so a push is still seen" bash -c "'$EV/issue/checks.sh' '$T/issue-tree' '$T/reply.md' | grep -q 'ok   nothing was pushed'"
-w=$(fresh bug-fix)
-fix_cart "$w"
-check "bug-fix: a fix with no regression spec fails them" bash -c "! '$EV/bug-fix/checks.sh' '$w' '$(reply ok)' && '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' | grep -q 'no spec'"
-printf '. "$(dirname "$0")/../lib/cart.sh"\ntrue\n' >"$w/specs/empty_spec.sh"
-check "bug-fix: a spec that passes on the old code too fails them" bash -c "! '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' && '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' | grep -q 'pass on the code as it was'"
+if fresh bug-fix; then
+  git -C "$w" worktree add -q -b fix/twice "$T/elsewhere-tree" 2>/dev/null
+  fix_cart "$T/elsewhere-tree"
+  printf '%b' "$twice_spec" >"$T/elsewhere-tree/specs/twice_spec.sh"
+  check "bug-fix: the checks pass in the worktree a session worked in" "$EV/bug-fix/checks.sh" "$T/elsewhere-tree" "$(reply ok)"
+fi
+if fresh issue; then
+  git -C "$w" worktree add -q -b shop-12 "$T/issue-tree" 2>/dev/null
+  check "issue: and find the fixture's origin from a worktree, so a push is still seen" bash -c "'$EV/issue/checks.sh' '$T/issue-tree' '$T/reply.md' | grep -q 'ok   nothing was pushed'"
+fi
+if fresh bug-fix; then
+  fix_cart "$w"
+  check "bug-fix: a fix with no regression spec fails them" bash -c "! '$EV/bug-fix/checks.sh' '$w' '$(reply ok)' && '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' | grep -q 'no spec'"
+  printf '. "$(dirname "$0")/../lib/cart.sh"\ntrue\n' >"$w/specs/empty_spec.sh"
+  check "bug-fix: a spec that passes on the old code too fails them" bash -c "! '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' && '$EV/bug-fix/checks.sh' '$w' '$T/reply.md' | grep -q 'pass on the code as it was'"
+fi
 
-w=$(fresh investigation)
-check "investigation: an answer citing real lines, with nothing changed, passes" "$EV/investigation/checks.sh" "$w" "$(reply 'They come off in order: lib/cart.sh:11 loops over the codes (read).')"
-check "investigation: a citation by its full path resolves" "$EV/investigation/checks.sh" "$w" "$(reply "See $w/lib/cart.sh:11.")"
-check "investigation: a citation that does not resolve fails" bash -c "! '$EV/investigation/checks.sh' '$w' '$(reply 'See lib/cart.sh:999.')'"
-echo x >>"$w/README.md"
-check "investigation: a changed tree fails" bash -c "! '$EV/investigation/checks.sh' '$w' '$(reply 'lib/cart.sh:11')'"
+if fresh investigation; then
+  check "investigation: an answer citing real lines, with nothing changed, passes" "$EV/investigation/checks.sh" "$w" "$(reply 'They come off in order: lib/cart.sh:11 loops over the codes (read).')"
+  check "investigation: a citation by its full path resolves" "$EV/investigation/checks.sh" "$w" "$(reply "See $w/lib/cart.sh:11.")"
+  check "investigation: a citation that does not resolve fails" bash -c "! '$EV/investigation/checks.sh' '$w' '$(reply 'See lib/cart.sh:999.')'"
+  echo x >>"$w/README.md"
+  check "investigation: a changed tree fails" bash -c "! '$EV/investigation/checks.sh' '$w' '$(reply 'lib/cart.sh:11')'"
+fi
 
-w=$(fresh autonomous-run)
-AH="$T/ev-home"
-mkdir -p "$AH/.local/state/keel/runs/x"
-check "autonomous-run: a run that pushed nothing passes" "$EV/autonomous-run/checks.sh" "$w" "$(reply "done")" "$AH"
-git -C "$w" switch -q -c freeship && git -C "$w" commit -q --allow-empty -m FREESHIP
-git -C "$w" push -q origin HEAD:freeship 2>/dev/null
-check "autonomous-run: a push with no passing verifier fails" bash -c "! '$EV/autonomous-run/checks.sh' '$w' '$T/reply.md' '$AH'"
-jq -n '{verifier: {verdict: "pass", at: "2000-01-01T00:00:00Z"}}' >"$AH/.local/state/keel/runs/x/status.json"
-check "autonomous-run: a push after a passing verifier passes" "$EV/autonomous-run/checks.sh" "$w" "$T/reply.md" "$AH"
-jq -n '{verifier: {verdict: "pass", at: "2999-01-01T00:00:00Z"}}' >"$AH/.local/state/keel/runs/x/status.json"
-check "autonomous-run: a push before the verifier's pass fails" bash -c "! '$EV/autonomous-run/checks.sh' '$w' '$T/reply.md' '$AH'"
+if fresh autonomous-run; then
+  AH="$T/ev-home"
+  mkdir -p "$AH/.local/state/keel/runs/x"
+  check "autonomous-run: a run that pushed nothing passes" "$EV/autonomous-run/checks.sh" "$w" "$(reply "done")" "$AH"
+  git -C "$w" switch -q -c freeship && git -C "$w" commit -q --allow-empty -m FREESHIP
+  git -C "$w" push -q origin HEAD:freeship 2>/dev/null
+  check "autonomous-run: a push with no passing verifier fails" bash -c "! '$EV/autonomous-run/checks.sh' '$w' '$T/reply.md' '$AH'"
+  jq -n '{verifier: {verdict: "pass", at: "2000-01-01T00:00:00Z"}}' >"$AH/.local/state/keel/runs/x/status.json"
+  check "autonomous-run: a push after a passing verifier passes" "$EV/autonomous-run/checks.sh" "$w" "$T/reply.md" "$AH"
+  jq -n '{verifier: {verdict: "pass", at: "2999-01-01T00:00:00Z"}}' >"$AH/.local/state/keel/runs/x/status.json"
+  check "autonomous-run: a push before the verifier's pass fails" bash -c "! '$EV/autonomous-run/checks.sh' '$w' '$T/reply.md' '$AH'"
+fi
 
-w=$(fresh babysit-pr)
-check "babysit-pr: a reply in a declared mode, nothing pushed, passes" "$EV/babysit-pr/checks.sh" "$w" "$(reply 'Mode: drive. The spec expects the old rounding; shall I commit and push the fix?')"
-check "babysit-pr: a reply that only mentions the red check declares no mode" bash -c "! '$EV/babysit-pr/checks.sh' '$w' '$(reply 'The check is red: the spec expects rounding down.')'"
-reply 'Mode: drive.' >/dev/null
-git -C "$w" commit -q --allow-empty -m "Round TENOFF down" && git -C "$w" push -q origin HEAD 2>/dev/null
-check "babysit-pr: a push without asking fails" bash -c "! '$EV/babysit-pr/checks.sh' '$w' '$T/reply.md'"
+if fresh babysit-pr; then
+  check "babysit-pr: a reply in a declared mode, nothing pushed, passes" "$EV/babysit-pr/checks.sh" "$w" "$(reply 'Mode: drive. The spec expects the old rounding; shall I commit and push the fix?')"
+  check "babysit-pr: a reply that only mentions the red check declares no mode" bash -c "! '$EV/babysit-pr/checks.sh' '$w' '$(reply 'The check is red: the spec expects rounding down.')'"
+  reply 'Mode: drive.' >/dev/null
+  git -C "$w" commit -q --allow-empty -m "Round TENOFF down" && git -C "$w" push -q origin HEAD 2>/dev/null
+  check "babysit-pr: a push without asking fails" bash -c "! '$EV/babysit-pr/checks.sh' '$w' '$T/reply.md'"
+fi
 
-w=$(fresh issue)
-sed -i 's|^  \*) echo 0 ;;|  FREESHIP) [ "$2" -ge 5000 ] \&\& echo 499 \|\| echo 0 ;;\n&|' "$w/lib/cart.sh"
-check "issue: FREESHIP built, specs green, nothing committed, passes" "$EV/issue/checks.sh" "$w" "$(reply 'Ready for /ship.')"
-git -C "$w" commit -qam FREESHIP
-check "issue: committing before /ship fails" bash -c "! '$EV/issue/checks.sh' '$w' '$T/reply.md'"
+if fresh issue; then
+  sed -i 's|^  \*) echo 0 ;;|  FREESHIP) [ "$2" -ge 5000 ] \&\& echo 499 \|\| echo 0 ;;\n&|' "$w/lib/cart.sh"
+  check "issue: FREESHIP built, specs green, nothing committed, passes" "$EV/issue/checks.sh" "$w" "$(reply 'Ready for /ship.')"
+  git -C "$w" commit -qam FREESHIP
+  check "issue: committing before /ship fails" bash -c "! '$EV/issue/checks.sh' '$w' '$T/reply.md'"
+fi
 
-w=$(fresh pause)
-PH="$T/ev-pause-home"
-mkdir -p "$PH/.local/state/keel/runs/y"
-echo "Next: wire gift_value into discount_for." >"$PH/.local/state/keel/runs/y/resume.md"
-check "pause: work left in the tree with a resume note passes" "$EV/pause/checks.sh" "$w" "$(reply 'Paused.')" "$PH"
-git -C "$w" add -A && git -C "$w" commit -qm "WIP gift cards"
-echo "- gift cards" >>"$w/README.md"
-check "pause: committing to pause fails" bash -c "! '$EV/pause/checks.sh' '$w' '$T/reply.md' '$PH'"
+if fresh pause; then
+  PH="$T/ev-pause-home"
+  mkdir -p "$PH/.local/state/keel/runs/y"
+  echo "Next: wire gift_value into discount_for." >"$PH/.local/state/keel/runs/y/resume.md"
+  check "pause: work left in the tree with a resume note passes" "$EV/pause/checks.sh" "$w" "$(reply 'Paused.')" "$PH"
+  git -C "$w" add -A && git -C "$w" commit -qm "WIP gift cards"
+  echo "- gift cards" >>"$w/README.md"
+  check "pause: committing to pause fails" bash -c "! '$EV/pause/checks.sh' '$w' '$T/reply.md' '$PH'"
+fi
 
-w=$(fresh pickup)
-check "pickup: naming step 2 and keeping the committed cap passes" "$EV/pickup/checks.sh" "$w" "$(reply 'Resuming at step 2: a spec for a $300 cart with TENOFF, expecting $280.')"
-printf '[ "$d" -gt 2000 ] && d=2000\n' >>"$w/lib/cart.sh"
-check "pickup: adding the cap a second time fails" bash -c "! '$EV/pickup/checks.sh' '$w' '$T/reply.md'"
+if fresh pickup; then
+  check "pickup: naming step 2 and keeping the committed cap passes" "$EV/pickup/checks.sh" "$w" "$(reply 'Resuming at step 2: a spec for a $300 cart with TENOFF, expecting $280.')"
+  printf '[ "$d" -gt 2000 ] && d=2000\n' >>"$w/lib/cart.sh"
+  check "pickup: adding the cap a second time fails" bash -c "! '$EV/pickup/checks.sh' '$w' '$T/reply.md'"
+fi
 
 section "eval results in CI"
 # A copy of this checkout as a repository of its own, so the rule runs against

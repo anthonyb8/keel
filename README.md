@@ -100,3 +100,7 @@ tests/linear-live.sh  # read-only checks against the real Linear workspaces; nee
 ```
 
 CI runs shellcheck and `tests/run.sh` on every pull request.
+
+Run the suite from a directory outside any repository, with `TMPDIR` under `/var/tmp`, such as `mkdir -p /var/tmp/keel-run && cd /var/tmp/keel-run && TMPDIR=/var/tmp/keel-run ~/path/to/keel/tests/run.sh`.
+Keep words such as "test" or "eval" out of that directory's name: the eval fixtures are built under it, and the suite checks that nothing they hold says what they are for.
+Outside a repository, a test whose fixture failed to build has no checkout to run git against, and a full `/tmp` is the usual reason a fixture fails.
