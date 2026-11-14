@@ -1231,6 +1231,19 @@ tagged="$SD/keel/runs/archive/-work-app/2026-11-12T09:00:00Z"
 mkdir -p "$tagged"
 echo '{"playbook":"bug-fix","tree":"/work/app","state":"done","started_at":"2026-11-12T09:00:00Z","steps":[{"title":"</script><b>x</b>","state":"done"}]}' >"$tagged/status.json"
 printf '#!/bin/sh\necho "$@" >>"%s/opened"\n' "$T" >"$T/stubs/xdg-open" && chmod +x "$T/stubs/xdg-open"
+fetch() { python3 -I -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=5).read())' "$1"; }
+# A tether whose laptop is connected only while $T/tethered exists, and whose
+# open fetches the URL the way the laptop's browser would.
+cat >"$T/stubs/tether" <<STUB
+#!/bin/sh
+case "\$1" in
+status) [ -e "$T/tethered" ] ;;
+open) [ -e "$T/tether-refuses" ] && { echo "tether: no browser connected" >&2; exit 1; }
+  echo "\$2" >"$T/tether-url"
+  python3 -I -c 'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1], timeout=5).read())' "\$2" >"$T/tether-page" ;;
+esac
+STUB
+chmod +x "$T/stubs/tether"
 page=$(XDG_STATE_HOME="$SD" "$K" dash)
 eq "keel dash exits 0" "0" "$?"
 eq "keel dash writes its page under the state folder and prints where" "$SD/keel/dash.html" "$page"
@@ -1244,12 +1257,41 @@ eq "it passes --since and --repo on to keel stats" "$(ks --json --repo late | jq
 kept=$(cksum <"$page")
 refute "when keel stats fails, so does keel dash" env XDG_STATE_HOME="$SD" "$K" dash --since yesterday
 eq "leaving the last page as it was, and no half-written one" "$kept|" "$(cksum <"$page")|$(ls "$SD"/keel/.status.* 2>/dev/null)"
+rm -f "$T/opened"
+touch "$T/tethered"
+out=$(XDG_STATE_HOME="$SD" "$K" dash)
+url=$(cat "$T/tether-url")
+check "with a tethered laptop it opens the page there, served from localhost" grep -qxE 'http://localhost:[0-9]+/' "$T/tether-url"
+eq "and says where it opened it" "opened $url in the tethered browser" "$(tail -1 <<<"$out")"
+check "serving exactly the page it wrote" cmp -s "$T/tether-page" "$page"
+refute "and stops serving once the page has loaded" fetch "$url"
+check "without calling xdg-open" test ! -e "$T/opened"
+touch "$T/tether-refuses"
+out=$(XDG_STATE_HOME="$SD" "$K" dash 2>&1)
+eq "when tether cannot open it, keel dash still exits 0" "0" "$?"
+check "naming tether's reason and the URL to open by hand" grep -qE "no browser connected.*open http://localhost:[0-9]+/ in a browser" <<<"$out"
+check "which is still served for it" fetch "$(grep -oE 'http://localhost:[0-9]+/' <<<"$out")"
+rm -f "$T/tethered" "$T/tether-refuses" "$T/tether-url" "$T/tether-page"
+url=$(python3 -I "$ROOT/rails/lib/serve-once.py" "$page" 5)
+port=${url//[^0-9]/}
+eq "it listens on 127.0.0.1 only" "127.0.0.1:$port" "$(ss -ltnH "sport = :$port" | awk '{print $4}')"
+eq "and tells the browser not to keep the page" "no-store" \
+  "$(python3 -I -c 'import sys, urllib.request; print(urllib.request.urlopen(sys.argv[1], timeout=5).headers["Cache-Control"])' "$url")"
+url=$(python3 -I "$ROOT/rails/lib/serve-once.py" "$page" 1)
+check "a page nothing fetches is still served before its time is up" test -n "$url"
+python3 -I -c 'import time; time.sleep(2)'
+refute "but not once its time is up" fetch "$url"
+url=$(python3 -I "$ROOT/rails/lib/serve-once.py" "$page" 5)
+check "a connection that sends nothing, as a browser's preconnect, does not hold up the page" python3 -I -c '
+import socket, sys, urllib.request
+idle = socket.create_connection(("127.0.0.1", int(sys.argv[1].split(":")[2].strip("/"))))
+urllib.request.urlopen(sys.argv[1], timeout=2).read()' "$url"
 printf '#!/bin/sh\nexit 3\n' >"$T/stubs/xdg-open"
 out=$(XDG_STATE_HOME="$SD" "$K" dash 2>&1)
 eq "with no browser to open it, it still exits 0" "0" "$?"
 check "and prints the path" grep -qxF "$SD/keel/dash.html" <<<"$out"
 check "saying to open it by hand" grep -q "open the path above in a browser" <<<"$out"
-rm -f "$T/stubs/xdg-open" "$T/opened"
+rm -f "$T/stubs/xdg-open" "$T/stubs/tether" "$T/opened"
 rm -rf "$HOME/.keel/claude/projects"
 
 section "reflect"
