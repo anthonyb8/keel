@@ -110,6 +110,7 @@ check "and install writes it again" cmp "$ROOT/templates/you/OPINIONS.md" "$YOU/
 section "settings merge"
 live="$YOU/settings.json"
 allowed() { jq -e --arg r "$1" '.permissions.allow | index($r)' "$live"; }
+# shellcheck disable=SC2317,SC2329 # called through check and refute
 denied() { jq -e --arg r "$1" '.permissions.deny | index($r)' "$live"; }
 # Claude Code writes to the live file itself, and the user adds to it.
 jq '.theme = "light" | .permissions.allow += ["Bash(make:*)"] | .permissions.defaultMode = "default"' "$live" >"$T/s" && cat "$T/s" >"$live"
