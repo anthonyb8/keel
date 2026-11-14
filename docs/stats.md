@@ -13,6 +13,8 @@ keel stats --json --since 2026-11-10 --repo app
 On a server with a laptop connected through [tether](https://github.com/anthonyb8/tether), it serves the page once on `127.0.0.1` and opens `http://localhost:<port>/` in the laptop's tether browser with `tether open`; the server stops after the page loads, or after two minutes if it never does, so nothing is left running.
 Without a tethered laptop it uses `xdg-open` or `open`, and with neither, or when one fails, it prints the path or URL to open by hand.
 The page needs no server and no network, follows the system's light or dark setting, and opens a view straight from `#overview`, `#skills` or `#scripts`.
+On Skills, picking a row shows what it says under the table: a skill's `SKILL.md` from `~/.keel/claude/skills/`, a step's line from its playbook, or `method/router.md` for the router, each read when the page is written.
+The text is rendered from Markdown as text only, so a skill's text cannot run on the page; `keel stats --json` stays counts only.
 
 `--since` leaves out runs started before that day, with everything they did, even on later days; a verifier outside a run counts by its own day.
 `--repo` keeps only trees, and sessions, whose path has that name as one of its parts, such as `app` for `~/.treehouse/app-359d95/13/app`.
