@@ -957,11 +957,15 @@ write_atomic() {
   cat >"$tmp" && mv -f "$tmp" "$1"
 }
 
-# Applies a jq filter to the run's status.json, stamping updated_at.
+# Applies a jq filter to the run's status.json, stamping updated_at. jq runs
+# before the write rather than into it, so a filter that fails or prints
+# nothing leaves status.json as it was instead of renaming an empty file over it.
 run_update() { # run_update <run dir> <jq filter> [jq args...]
-  local dir="$1" filter="$2"
+  local dir="$1" filter="$2" json
   shift 2
-  jq --arg now "$(now)" "$@" "($filter) | .updated_at = \$now" "$dir/status.json" | write_atomic "$dir/status.json"
+  json=$(jq --arg now "$(now)" "$@" "($filter) | .updated_at = \$now" "$dir/status.json") || return
+  [[ -n "$json" ]] || die "the update to $dir/status.json printed nothing, so it was left as it was"
+  write_atomic "$dir/status.json" <<<"$json"
 }
 
 # jq definitions for a step's attempts, prefixed to a run_update filter. A
