@@ -1149,9 +1149,9 @@ section "stats"
 # step 1, audits in step 5 with a keel-agent and a verifier, waits ten minutes
 # on the user, goes back to step 1, and verifies again with a second model.
 SD="$T/stats-state"
-cp -r "$ROOT/tests/fixtures/stats/state" "$SD"
+cp -R "$ROOT/tests/fixtures/stats/state" "$SD"
 mkdir -p "$HOME/.keel/claude"
-cp -r "$ROOT/tests/fixtures/stats/projects" "$HOME/.keel/claude/projects"
+cp -R "$ROOT/tests/fixtures/stats/projects" "$HOME/.keel/claude/projects"
 ks() { XDG_STATE_HOME="$SD" "$K" stats "$@"; } # keel stats on the fixture's state, as $SD/keel
 mkdir -p "$SD/keel" && mv "$SD"/runs "$SD"/events.jsonl "$SD"/verdicts.jsonl "$SD/keel/"
 out=$(ks --json)
@@ -1199,10 +1199,12 @@ eq "--since leaves out a run started the day before, with everything it did on l
   "$(ks --json --since 2026-11-10 --repo late | jq -c .skills)"
 eq "a line whose timestamp or token counts cannot be read is counted unread, not fatal" "5" "$(ks --json | jq .unread.unread)"
 # Values of the wrong type anywhere it reads, as a damaged or hand-edited file would hold.
-python3 -I -c 'print("[" * 200000 + "]" * 200000)' >>"$late/s2.jsonl"
-printf '%s\n' '{"type":"user","timestamp":12345}' '[1,2]' '{"type":"assistant","timestamp":"2026-11-10T10:00:14Z","message":{"id":"neg","model":["m"],"usage":{"output_tokens":-5},"content":[]}}' >>"$late/s2.jsonl"
-python3 -I -c 'import json; print(json.dumps({"type": "assistant", "timestamp": "2026-11-10T10:00:15Z", "message": {"id": "big", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "keel run step " + "9" * 5000 + " doing"}}]}}))' >>"$late/s2.jsonl"
-python3 -I -c 'import json; print(json.dumps({"type": "assistant", "timestamp": "2026-11-10T10:00:16Z", "message": {"id": "huge", "usage": {"output_tokens": 10 ** 4000}, "content": [{"type": "tool_use", "name": "Bash", "input": {"command": ["keel run step 4 doing"]}}]}}))' >>"$late/s2.jsonl"
+{
+  python3 -I -c 'print("[" * 200000 + "]" * 200000)'
+  printf '%s\n' '{"type":"user","timestamp":12345}' '[1,2]' '{"type":"assistant","timestamp":"2026-11-10T10:00:14Z","message":{"id":"neg","model":["m"],"usage":{"output_tokens":-5},"content":[]}}'
+  python3 -I -c 'import json; print(json.dumps({"type": "assistant", "timestamp": "2026-11-10T10:00:15Z", "message": {"id": "big", "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "keel run step " + "9" * 5000 + " doing"}}]}}))'
+  python3 -I -c 'import json; print(json.dumps({"type": "assistant", "timestamp": "2026-11-10T10:00:16Z", "message": {"id": "huge", "usage": {"output_tokens": 10 ** 4000}, "content": [{"type": "tool_use", "name": "Bash", "input": {"command": ["keel run step 4 doing"]}}]}}))'
+} >>"$late/s2.jsonl"
 mkdir -p "$late/s2/subagents"
 cp "$HOME/.keel/claude/projects/-work-app/s1/subagents/agent-a1.jsonl" "$late/s2/subagents/agent-x.jsonl"
 printf '\xff\xfe not json' >"$late/s2/subagents/agent-x.meta.json"
@@ -1222,6 +1224,32 @@ for c in "$SD"/keel/stats-cache/*.json; do jq -c '.session.buckets[0].day = 5 | 
 eq "a damaged cache entry is read again from its transcript, not trusted" '[0,2]' "$(ks --json --repo app | jq -c '[.transcripts.cached, .transcripts.read]')"
 check "leaving no half-written cache file" bash -c "! ls '$SD'/keel/stats-cache/*.tmp 2>/dev/null"
 refute "a bad --since is refused" ks --since yesterday
+
+section "dash"
+# A step title that would end the page's script tag if written into it raw.
+tagged="$SD/keel/runs/archive/-work-app/2026-11-12T09:00:00Z"
+mkdir -p "$tagged"
+echo '{"playbook":"bug-fix","tree":"/work/app","state":"done","started_at":"2026-11-12T09:00:00Z","steps":[{"title":"</script><b>x</b>","state":"done"}]}' >"$tagged/status.json"
+printf '#!/bin/sh\necho "$@" >>"%s/opened"\n' "$T" >"$T/stubs/xdg-open" && chmod +x "$T/stubs/xdg-open"
+page=$(XDG_STATE_HOME="$SD" "$K" dash)
+eq "keel dash exits 0" "0" "$?"
+eq "keel dash writes its page under the state folder and prints where" "$SD/keel/dash.html" "$page"
+eq "and opens it" "$page" "$(cat "$T/opened")"
+eq "with keel stats embedded in it" "$(ks --json | jq -cS 'del(.transcripts)')" \
+  "$(sed -n '/<script id="stats"/,/<\/script>/p' "$page" | sed '1d;$d' | jq -cS 'del(.transcripts)')"
+eq "and no text from a run can end its script tag" "2" "$(grep -o '</script' "$page" | wc -l | tr -d ' ')"
+XDG_STATE_HOME="$SD" "$K" dash --repo late >/dev/null
+eq "it passes --since and --repo on to keel stats" "$(ks --json --repo late | jq -cS '.skills | map(.name)')" \
+  "$(sed -n '/<script id="stats"/,/<\/script>/p' "$page" | sed '1d;$d' | jq -cS '.skills | map(.name)')"
+kept=$(cksum <"$page")
+refute "when keel stats fails, so does keel dash" env XDG_STATE_HOME="$SD" "$K" dash --since yesterday
+eq "leaving the last page as it was, and no half-written one" "$kept|" "$(cksum <"$page")|$(ls "$SD"/keel/.status.* 2>/dev/null)"
+printf '#!/bin/sh\nexit 3\n' >"$T/stubs/xdg-open"
+out=$(XDG_STATE_HOME="$SD" "$K" dash 2>&1)
+eq "with no browser to open it, it still exits 0" "0" "$?"
+check "and prints the path" grep -qxF "$SD/keel/dash.html" <<<"$out"
+check "saying to open it by hand" grep -q "open the path above in a browser" <<<"$out"
+rm -f "$T/stubs/xdg-open" "$T/opened"
 rm -rf "$HOME/.keel/claude/projects"
 
 section "reflect"

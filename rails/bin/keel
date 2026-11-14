@@ -39,6 +39,8 @@
 #   keel status --json [path] every run not yet archived, or the one for path; docs/status.md
 #   keel stats [--json] [--since YYYY-MM-DD] [--repo name]
 #                             which skills run most, take longest and get rerun, and on which model; docs/stats.md
+#   keel dash [--since YYYY-MM-DD] [--repo name]
+#                             write keel stats as one page under ~/.local/state/keel and open it
 #   keel verdict [--json]     the last keel-verifier's verdict for this tree; passes only on a pass at HEAD
 #   keel merge <squash|commit> [n]
 #                             merge PR n, else the current branch's, with that method once it is
@@ -1567,6 +1569,27 @@ merge_pr() { # merge_pr <squash|commit> [PR number]
   esac
 }
 
+# `keel dash` writes keel stats into one self-contained page and opens it:
+# no server, nothing left running. Every < in the data is escaped, so no text
+# from a run can end the script tag that holds it.
+dash() { # dash [keel stats options]
+  local page="$STATE_DIR/dash.html" json opener
+  json=$(python3 -I "$LIB_DIR/stats.py" "$STATE_DIR" "$HOME/.keel/claude" "$METHOD_DIR" --json "$@") || exit $?
+  mkdir -p "$STATE_DIR"
+  {
+    sed '/^__STATS__$/,$d' "$LIB_DIR/dash.html"
+    jq -c . <<<"$json" | sed 's/</\\u003c/g'
+    sed '1,/^__STATS__$/d' "$LIB_DIR/dash.html"
+  } | write_atomic "$page"
+  echo "$page"
+  for opener in xdg-open open; do
+    if command -v "$opener" >/dev/null; then
+      "$opener" "$page" >/dev/null 2>&1 || echo "keel: $opener could not open it; open the path above in a browser" >&2
+      return 0
+    fi
+  done
+}
+
 # Learning: `keel reflect triage` applies /reflect's twice rule and level
 # ordering to the synthesizer's findings, so the rule lives in code, not in a
 # model's reading of a skill. seen.tsv is private to the machine and never
@@ -1648,6 +1671,7 @@ sweep) sweep "${1:-}" ;;
 run) run "$@" ;;
 status) status "$@" ;;
 stats) exec python3 -I "$LIB_DIR/stats.py" "$STATE_DIR" "$HOME/.keel/claude" "$METHOD_DIR" "$@" ;;
+dash) dash "$@" ;;
 verdict) verdict "$@" ;;
 merge) merge_pr "$@" ;;
 reflect) reflect "$@" ;;

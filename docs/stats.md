@@ -9,6 +9,9 @@ keel stats --json                   # everything below, as one JSON object
 keel stats --json --since 2026-11-10 --repo app
 ```
 
+`keel dash`, with the same options, writes the same numbers into one page, `~/.local/state/keel/dash.html`, and opens it with `xdg-open` or `open`; with neither, or when it fails, it prints the path to open by hand.
+The page needs no server and no network, follows the system's light or dark setting, and opens a view straight from `#overview`, `#skills` or `#scripts`.
+
 `--since` leaves out runs started before that day, with everything they did, even on later days; a verifier outside a run counts by its own day.
 `--repo` keeps only trees, and sessions, whose path has that name as one of its parts, such as `app` for `~/.treehouse/app-359d95/13/app`.
 

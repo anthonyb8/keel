@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>keel telemetry</title>
+<style>
+:root {
+  --bg: #F6F6F3; --card: #FFFFFF; --line: #E4E4DE; --line-soft: #EEEEE9; --track: #F0F0EB;
+  --ink: #1A1A18; --muted: #5C5C57; --body: #4A4A45;
+  --blue: #2B55C8; --blue-soft: #EAEEF9; --blue-ink: #1E3F99;
+  --orange: #E8A26A; --orange-soft: #FBEDE2; --orange-ink: #8A3A06;
+  --green: #3F8C66; --green-soft: #E6F2EC; --green-ink: #1D6343;
+  --purple-soft: #F1E8F7; --purple-ink: #5B2A86; --sel: #F1F4FC;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --card: #1F1F1D; --line: #34342F; --line-soft: #2A2A26; --track: #2C2C28;
+    --ink: #ECECE7; --muted: #A6A69E; --body: #C9C9C2;
+    --blue: #7D9BEB; --blue-soft: #232B44; --blue-ink: #B5C6F5;
+    --orange: #D99159; --orange-soft: #3A2A1D; --orange-ink: #F2C49E;
+    --green: #6DB892; --green-soft: #1E3328; --green-ink: #A9DBC0;
+    --purple-soft: #2F2638; --purple-ink: #D7BCEC; --sel: #252B3A;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.wrap { max-width: 1360px; margin: 0 auto; padding: 32px 24px 48px; display: flex; flex-direction: column; gap: 20px; }
+header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+h2 { margin: 0; font-size: 15px; font-weight: 600; }
+h3 { margin: 0; font-size: 13px; font-weight: 600; }
+p { margin: 0; }
+.sub { font-size: 13px; color: var(--muted); }
+nav, .row { display: flex; flex-wrap: wrap; gap: 8px; }
+button { font: inherit; color: inherit; cursor: pointer; }
+.navbtn { min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); font-weight: 500; }
+.navbtn[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.seg { display: flex; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+.seg button { min-height: 36px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 500; }
+.seg button[aria-pressed="true"] { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 4px; }
+.tile .k { font-size: 13px; color: var(--muted); font-weight: 500; }
+.tile .v { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
+.tile .s { font-size: 12px; color: var(--muted); }
+.cols { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.grow { flex: 999 1 640px; }
+.side { flex: 1 1 420px; }
+.half { flex: 1 1 520px; }
+.chart { display: grid; gap: 6px; align-items: end; height: 180px; border-bottom: 1px solid var(--line); }
+.chart .col { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 3px; }
+.chart .bar { width: 100%; max-width: 34px; border-radius: 3px 3px 0 0; }
+.chart .n { font-size: 11px; color: var(--muted); }
+.labels { display: grid; gap: 6px; margin-top: 4px; }
+.labels span { text-align: center; font-size: 11px; color: var(--muted); overflow: hidden; white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.hot { display: flex; gap: 14px; align-items: flex-start; padding: 12px 0; border-top: 1px solid var(--line-soft); }
+.tag { flex: none; width: 124px; box-sizing: border-box; text-align: center; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+.tag.often { background: var(--blue-soft); color: var(--blue-ink); }
+.tag.long { background: var(--purple-soft); color: var(--purple-ink); }
+.tag.rerun { background: var(--orange-soft); color: var(--orange-ink); }
+.tag.model { background: var(--green-soft); color: var(--green-ink); }
+.tag.playbook { background: var(--track); color: var(--body); }
+.hot b { display: block; font-size: 14px; }
+.hot span { font-size: 13px; color: var(--body); }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 500; color: var(--muted); padding: 8px; white-space: nowrap; }
+td { padding: 8px; border-top: 1px solid var(--line-soft); vertical-align: middle; }
+td.r, th.r { text-align: right; white-space: nowrap; }
+tr.on { background: var(--sel); }
+.rowbtn { width: 100%; min-height: 40px; text-align: left; border: 0; background: transparent; padding: 2px 0; }
+.rowbtn b { display: block; font: 600 13px ui-monospace, Menlo, Consolas, monospace; }
+.rowbtn small { color: var(--muted); font-size: 12px; }
+.rowbtn b, .rowbtn small, td.nowrap { white-space: nowrap; }
+.meter { display: flex; align-items: center; gap: 8px; }
+.track { flex: 1; display: flex; height: 10px; background: var(--track); border-radius: 5px; overflow: hidden; min-width: 48px; }
+.meter .num { flex: none; min-width: 64px; text-align: right; white-space: nowrap; }
+.pill { display: inline-block; white-space: nowrap; padding: 3px 8px; border-radius: 999px; background: var(--track); font: 500 11px ui-monospace, Menlo, Consolas, monospace; }
+.qs { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.q { min-height: 64px; text-align: left; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); }
+.q b { display: block; font-size: 15px; }
+.q small { display: block; font-size: 12px; opacity: 0.8; margin-top: 4px; }
+.q[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.cards2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mini { border: 1px solid var(--line-soft); border-radius: 10px; padding: 10px 12px; }
+.mini .k { font-size: 12px; color: var(--muted); }
+.mini .v { font: 600 17px ui-monospace, Menlo, Consolas, monospace; }
+.mini .s { font-size: 11px; color: var(--muted); }
+.kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; font-size: 12px; }
+.empty { display: flex; gap: 12px; padding: 16px; border: 1px dashed var(--line); border-radius: 10px; background: var(--bg); font-size: 13px; color: var(--body); }
+.warn { padding: 12px 16px; border-radius: 10px; background: var(--orange-soft); color: var(--orange-ink); font-size: 13px; }
+footer { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+.view { display: flex; flex-direction: column; gap: 20px; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>keel telemetry</h1>
+      <p class="sub" id="meta"></p>
+    </div>
+    <nav role="tablist" aria-label="Views">
+      <button class="navbtn" role="tab" data-view="overview" aria-selected="true">Overview</button>
+      <button class="navbtn" role="tab" data-view="skills" aria-selected="false">Skills</button>
+      <button class="navbtn" role="tab" data-view="scripts" aria-selected="false">Scripts</button>
+    </nav>
+  </header>
+
+  <div id="unread" class="warn hidden"></div>
+
+  <section id="view-overview" data-view="overview" class="view">
+    <div class="tiles" id="tiles"></div>
+    <div class="cols">
+      <div class="card half">
+        <h2>Runs started per day</h2>
+        <div id="runs-chart" style="margin-top: 16px"></div>
+      </div>
+      <div class="card half">
+        <div class="row" style="justify-content: space-between; align-items: baseline">
+          <h2>Verifier verdicts per day</h2>
+          <div class="legend"><span><i style="background: var(--blue)"></i>pass</span><span><i style="background: var(--orange)"></i>fail</span></div>
+        </div>
+        <div id="verdict-chart" style="margin-top: 16px"></div>
+      </div>
+    </div>
+    <div class="cols">
+      <div class="card grow">
+        <h2>Where to adjust</h2>
+        <p class="sub" style="margin: 4px 0 8px">What runs most, takes longest, gets rerun, and which model did it. Each line comes from a fixed threshold, so the list changes only when the numbers do.</p>
+        <div id="hot"></div>
+      </div>
+      <div class="card side">
+        <h2>Playbooks</h2>
+        <div class="scroll" style="margin-top: 12px"><table id="playbooks"></table></div>
+        <p class="sub" style="margin-top: 10px; font-size: 12px">Median is wall time from start to end, including time waiting on you at a (stop) step.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-skills" data-view="skills" class="view hidden">
+    <div class="qs" role="tablist" aria-label="Question" id="questions"></div>
+    <div class="row" style="justify-content: space-between; align-items: center">
+      <p class="sub" id="q-intro" style="max-width: 760px; color: var(--body)"></p>
+      <div class="seg" role="group" aria-label="Show">
+        <button data-mode="run" aria-pressed="true">Per run</button>
+        <button data-mode="total" aria-pressed="false">Total</button>
+      </div>
+    </div>
+    <div class="cols">
+      <div class="card grow">
+        <h2 id="skills-title"></h2>
+        <div class="scroll" style="margin-top: 12px"><table id="skills-table"></table></div>
+        <div class="legend" style="margin-top: 14px">
+          <span><i style="background: var(--blue)"></i>agent time</span>
+          <span><i style="background: var(--orange)"></i>waiting on you</span>
+          <span><i style="background: var(--ink)"></i>session tokens</span>
+          <span><i style="background: var(--green)"></i>subagent tokens</span>
+        </div>
+      </div>
+      <aside class="card side" id="detail" style="display: flex; flex-direction: column; gap: 18px"></aside>
+    </div>
+  </section>
+
+  <section id="view-scripts" data-view="scripts" class="view hidden">
+    <div class="card">
+      <div class="row" style="justify-content: space-between; align-items: baseline">
+        <h2>Script outcomes</h2>
+        <span class="sub" style="font-size: 12px">Exit 0 settled it, exit 2 handed it to the agent, exit 1 broke</span>
+      </div>
+      <div id="scripts-body" style="margin-top: 14px"></div>
+    </div>
+  </section>
+
+  <footer id="foot">Tool calls, time and tokens are given to the step a run had in doing when they happened. Agent time leaves out gaps over 30 minutes; waiting is the gap before each message you typed. A subagent counts toward the step its first message falls in, and each keel-verifier toward /verify. docs/stats.md says how every number is counted.</footer>
+</div>
+
+<script id="stats" type="application/json">
+__STATS__
+</script>
+<script>
+"use strict";
+const S = JSON.parse(document.getElementById("stats").textContent);
+
+// Thresholds behind "Where to adjust"; fixed, so the list moves only when the numbers do.
+const MIN_RUNS = 3;            // a skill needs this many runs before its per-run figures are ranked
+const FIRST_PASS_BAR = 0.6;    // below this share of first-round passes, verifying is flagged
+const SUBAGENT_SHARE = 0.5;    // a skill with more of its tokens in subagents is a candidate for a cheaper model
+const SKIP_SHARE = 0.5;        // a step skipped in more of its runs than this is flagged
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "style") n.style.cssText = v;
+    else if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) n.append(kid);
+  return n;
+}
+const fmtMin = s => { const m = s / 60; return m >= 120 ? (m / 60).toFixed(1) + " h" : m >= 1 ? Math.round(m) + " min" : Math.round(s) + " s"; };
+const fmtTok = n => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e7 ? Math.round(n / 1e6) + "M" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(Math.round(n));
+const pct = (a, b) => b ? Math.round(a / b * 100) + "%" : "0%";
+const tok = s => s.tokens.session + s.tokens.subagents;
+const where = s => s.name === "router" ? "before step 1 of every run" : s.name === "verify" ? "each keel-verifier spawned" : s.where.join(", ");
+const modelName = m => m.replace(/^claude-/, "").replace(/-(\d+)-(\d+)$/, " $1.$2");
+const sum = (xs, f) => xs.reduce((a, x) => a + f(x), 0);
+const skills = S.skills;
+
+document.getElementById("meta").textContent =
+  "Local only, from keel's run files and transcripts" + (S.since ? ", since " + S.since : "") + (S.repo ? ", repository " + S.repo : "") + ".";
+if (S.unread.unread) {
+  const w = document.getElementById("unread");
+  w.textContent = S.unread.unread + " of " + S.unread.lines + " transcript lines could not be read and were skipped (" + (S.unread.share * 100).toFixed(1) + "%). A large share means Claude Code changed its transcript format.";
+  w.classList.remove("hidden");
+}
+
+// Views, also reachable as #overview, #skills or #scripts
+function show(view) {
+  for (const o of document.querySelectorAll(".navbtn")) o.setAttribute("aria-selected", String(o.dataset.view === view));
+  for (const v of document.querySelectorAll(".view")) v.classList.toggle("hidden", v.dataset.view !== view);
+}
+for (const b of document.querySelectorAll(".navbtn")) b.addEventListener("click", () => { history.replaceState(null, "", "#" + b.dataset.view); show(b.dataset.view); });
+if (["overview", "skills", "scripts"].includes(location.hash.slice(1))) show(location.hash.slice(1));
+
+// Overview: tiles
+const runsTotal = sum(S.playbooks, p => p.runs);
+const agent = sum(skills, s => s.agent_s), wait = sum(skills, s => s.wait_s), tokens = sum(skills, tok);
+const models = {};
+for (const s of skills) for (const [m, n] of Object.entries(s.models)) models[m] = (models[m] || 0) + n;
+const v = S.verifier;
+const skillRuns = sum(skills.filter(s => s.name !== "router"), s => s.runs);
+const verify = skills.find(s => s.name === "verify");
+const tiles = [
+  ["Runs", String(runsTotal), S.playbooks.length ? S.playbooks.map(p => p.runs + " " + p.name).join(", ") : "no runs in range"],
+  ["Agent time", fmtMin(agent), "working, idle gaps over 30 min left out"],
+  ["Waiting on you", fmtMin(wait), "time before each reply you typed"],
+  ["Tokens", fmtTok(tokens), Object.keys(models).length ? Object.entries(models).sort((a, b) => b[1] - a[1]).map(([m, n]) => modelName(m) + " " + pct(n, tokens)).join(", ") : "none"],
+  ["Verifier first pass", v.verified_runs ? pct(v.first_pass, v.verified_runs) : "-", v.first_pass + " of " + v.verified_runs + " verified runs passed round one"],
+  ["Skill runs", String(skillRuns), verify ? verify.runs + " of them /verify" : "the router not counted"],
+];
+document.getElementById("tiles").append(...tiles.map(([k, val, s]) => el("div", {class: "tile"}, el("div", {class: "k"}, k), el("div", {class: "v mono"}, val), el("div", {class: "s"}, s))));
+
+// Overview: charts
+function chart(id, rows, series, label) {
+  const host = document.getElementById(id);
+  if (!rows.length) { host.append(el("p", {class: "sub"}, "Nothing in range.")); return; }
+  const max = Math.max(1, ...rows.map(r => sum(series, ([k]) => r[k] || 0)));
+  const cols = "repeat(" + rows.length + ", minmax(0, 1fr))";
+  const bars = el("div", {class: "chart", style: "grid-template-columns: " + cols, role: "img", "aria-label": label + ": " + rows.map(r => r.day + " " + series.map(([k]) => (r[k] || 0) + " " + k).join(" ")).join(", ")});
+  for (const r of rows) {
+    const total = sum(series, ([k]) => r[k] || 0);
+    const col = el("div", {class: "col"}, el("span", {class: "n mono"}, total ? series.map(([k]) => r[k] || 0).join("/") : ""));
+    for (const [k, color] of series.slice().reverse()) if (r[k]) col.append(el("div", {class: "bar", style: "background: " + color + "; height: " + Math.round((r[k] / max) * 140) + "px"}));
+    bars.append(col);
+  }
+  host.append(bars, el("div", {class: "labels", style: "grid-template-columns: " + cols}, rows.map(r => el("span", {}, r.day.slice(5)))));
+}
+const days = S.days.slice(-14);
+chart("runs-chart", days, [["runs", "var(--blue)"]], "Runs per day");
+chart("verdict-chart", days, [["pass", "var(--blue)"], ["fail", "var(--orange)"]], "Verdicts per day");
+
+// Overview: where to adjust
+const hot = [];
+const ranked = skills.filter(s => s.name !== "router" && s.runs >= MIN_RUNS);
+const often = skills.filter(s => s.name !== "router").sort((a, b) => b.runs - a.runs)[0];
+if (often) hot.push(["often", often.name + " runs most: " + often.runs + " times", "Each run takes " + fmtMin(often.agent_s / often.runs) + " of agent time and " + fmtTok(tok(often) / often.runs) + " tokens. A saving here repeats on every run."]);
+const longest = ranked.slice().sort((a, b) => b.agent_s / b.runs - a.agent_s / a.runs)[0];
+if (longest) hot.push(["long", longest.name + " takes longest: " + fmtMin(longest.agent_s / longest.runs) + " of agent time per run", "Across its " + longest.runs + " runs. Open it on Skills to see who did the work."]);
+const waits = ranked.slice().sort((a, b) => b.wait_s / b.runs - a.wait_s / a.runs)[0];
+if (waits && waits.wait_s) hot.push(["long", waits.name + " waits on you most: " + fmtMin(waits.wait_s / waits.runs) + " per run", "Your time at a (stop) step, kept apart from the agent's so it never hides a slow skill."]);
+if (v.verified_runs && v.first_pass / v.verified_runs < FIRST_PASS_BAR) hot.push(["rerun", pct(v.verified_runs - v.first_pass, v.verified_runs) + " of verified changes fail the verifier at least once", (v.verified_runs - v.first_pass) + " of " + v.verified_runs + " runs. The fix belongs in the skills that write the code, not in /verify."]);
+for (const s of skills.filter(s => s.reruns > 0).sort((a, b) => b.reruns - a.reruns).slice(0, 2)) hot.push(["rerun", s.name + " was redone " + s.reruns + (s.reruns === 1 ? " time" : " times"), "A run went back to its step after starting another."]);
+const modelList = Object.keys(models);
+if (modelList.length === 1) hot.push(["model", "Every skill ran on " + modelName(modelList[0]) + " alone", "Skills whose work is mostly subagents are the first to try another model on: " + (skills.filter(s => tok(s) && s.tokens.subagents / tok(s) > SUBAGENT_SHARE).map(s => s.name + " (" + pct(s.tokens.subagents, tok(s)) + ")").join(", ") || "none yet") + "."]);
+for (const p of S.playbooks) for (const st of p.steps) {
+  const n = st.done + st.skipped + st.open;
+  if (n >= MIN_RUNS && st.skipped / n > SKIP_SHARE) {
+    const codes = Object.entries(st.skip_codes).sort((a, b) => b[1] - a[1]).map(([c, k]) => k + " " + c).join(", ");
+    hot.push(["playbook", p.name + " step " + st.n + " is skipped in " + pct(st.skipped, n) + " of runs", st.skipped + " of " + n + " runs" + (codes ? ": " + codes : "; runs before skip codes say why only in free text") + "."]);
+  }
+}
+const tagName = {often: "RUNS MOST", long: "TAKES LONGEST", rerun: "RERUN", model: "MODEL", playbook: "PLAYBOOK"};
+const hotHost = document.getElementById("hot");
+if (!hot.length) hotHost.append(el("p", {class: "sub"}, "Nothing crosses a threshold yet."));
+hotHost.append(...hot.map(([k, t, d]) => el("div", {class: "hot"}, el("span", {class: "tag " + k}, tagName[k]), el("div", {}, el("b", {}, t), el("span", {}, d)))));
+
+// Overview: playbooks
+const pt = document.getElementById("playbooks");
+pt.append(el("tr", {}, el("th", {}, "Playbook"), el("th", {class: "r"}, "Runs"), el("th", {class: "r"}, "Median"), el("th", {class: "r"}, "Stopped"), el("th", {class: "r"}, "Versions")));
+for (const p of S.playbooks) pt.append(el("tr", {}, el("td", {class: "mono"}, p.name), el("td", {class: "r mono"}, String(p.runs)), el("td", {class: "r mono"}, p.median_minutes == null ? "-" : fmtMin(p.median_minutes * 60)), el("td", {class: "r mono"}, String((p.states.stopped || 0) + (p.states.failed || 0))), el("td", {class: "r mono"}, p.versions ? String(p.versions) : "-")));
+
+// Skills
+const QS = [
+  ["often", "Runs most", "Where a small saving repeats most", "Sorted by how often each skill runs. A skill near the top is where shaving a little off each run adds up, and the first place to try a smaller model.", s => s.runs],
+  ["long", "Takes longest", "Agent time per run", "Sorted by agent time. Waiting on you is shown beside it but does not count: that is your time at a (stop) step, not the skill's.", (s, d) => s.agent_s / d(s)],
+  ["rerun", "Gets rerun", "Quality: work done twice", "Sorted by how often a skill's work had to be redone: steps entered again in the same run, and verifier rounds for /verify.", s => s.name === "verify" ? verifyReruns(s) : s.reruns / Math.max(s.runs, 1)],
+  ["tokens", "Uses most tokens", "Session and subagent tokens", "Sorted by tokens, split into the session's and its subagents'. A large subagent share is work another model could take on.", (s, d) => tok(s) / d(s)],
+];
+function verifyReruns(s) {
+  const r = Object.entries(s.verify_rounds || {}), runs = sum(r, ([, n]) => n);
+  return runs ? sum(r.filter(([k]) => Number(k) > 1), ([, n]) => n) / runs : 0;
+}
+const state = {q: "often", mode: "run", sel: (skills.find(s => s.name !== "router") || {}).name};
+const qHost = document.getElementById("questions");
+for (const [k, label, sub] of QS) qHost.append(el("button", {class: "q", role: "tab", "data-q": k, "aria-selected": String(k === state.q), onclick: () => { state.q = k; renderSkills(); }}, el("b", {}, label), el("small", {}, sub)));
+for (const b of document.querySelectorAll(".seg button")) b.addEventListener("click", () => { state.mode = b.dataset.mode; renderSkills(); });
+
+function rerunText(s) {
+  if (s.name === "verify") { const r = verifyReruns(s); return r ? pct(r, 1) + " took 2+ rounds" : "none"; }
+  return s.reruns ? s.reruns + " of " + s.runs + " runs" : "none";
+}
+function meter(parts, max, label, text) {
+  return el("div", {class: "meter"}, el("div", {class: "track", role: "img", "aria-label": label}, parts.map(([v, c]) => el("div", {style: "background: " + c + "; width: " + (max ? v / max * 100 : 0) + "%"}))), el("span", {class: "num mono"}, text));
+}
+function renderSkills() {
+  for (const b of qHost.children) b.setAttribute("aria-selected", String(b.dataset.q === state.q));
+  for (const b of document.querySelectorAll(".seg button")) b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode));
+  const q = QS.find(x => x[0] === state.q);
+  document.getElementById("q-intro").textContent = q[3];
+  const per = state.mode === "run";
+  document.getElementById("skills-title").textContent = q[1] + (per ? ", per run" : ", in total");
+  const d = s => per ? Math.max(s.runs, 1) : 1;
+  const rows = skills.slice().sort((a, b) => q[4](b, d) - q[4](a, d) || b.runs - a.runs);
+  const maxT = Math.max(1, ...rows.map(s => (s.agent_s + s.wait_s) / d(s)));
+  const maxK = Math.max(1, ...rows.map(s => tok(s) / d(s)));
+  const t = document.getElementById("skills-table");
+  t.replaceChildren(el("tr", {}, el("th", {}, "Skill"), el("th", {class: "r"}, "Runs"), el("th", {}, per ? "Agent time per run" : "Agent time"), el("th", {}, per ? "Tokens per run" : "Tokens"), el("th", {}, "Reruns"), el("th", {}, "Model")));
+  for (const s of rows) {
+    const top = Object.entries(s.models).sort((a, b) => b[1] - a[1]).map(([m]) => modelName(m));
+    t.append(el("tr", {class: s.name === state.sel ? "on" : ""},
+      el("td", {}, el("button", {class: "rowbtn", "aria-pressed": String(s.name === state.sel), onclick: () => { state.sel = s.name; renderSkills(); }}, el("b", {}, s.name), el("small", {}, where(s)))),
+      el("td", {class: "r mono", style: state.q === "often" ? "font-weight: 700" : ""}, String(s.runs)),
+      el("td", {}, meter([[s.agent_s / d(s), "var(--blue)"], [s.wait_s / d(s), "var(--orange)"]], maxT, fmtMin(s.agent_s / d(s)) + " agent time, " + fmtMin(s.wait_s / d(s)) + " waiting", fmtMin(s.agent_s / d(s)))),
+      el("td", {}, meter([[s.tokens.session / d(s), "var(--ink)"], [s.tokens.subagents / d(s), "var(--green)"]], maxK, fmtTok(s.tokens.session / d(s)) + " session, " + fmtTok(s.tokens.subagents / d(s)) + " subagents", fmtTok(tok(s) / d(s)))),
+      el("td", {class: "nowrap", style: "font-size: 12px; color: " + (rerunText(s) === "none" ? "var(--muted)" : "var(--orange-ink)")}, rerunText(s)),
+      el("td", {}, top.length ? el("span", {class: "pill", title: top.join(", ")}, top[0] + (top.length > 1 ? " +" + (top.length - 1) : "")) : "-")));
+  }
+  renderDetail(skills.find(s => s.name === state.sel));
+}
+function renderDetail(s) {
+  const host = document.getElementById("detail");
+  if (!s) { host.replaceChildren(el("p", {class: "sub"}, "No skill runs in range.")); return; }
+  const n = Math.max(s.runs, 1), total = tok(s);
+  const kids = [
+    el("div", {}, el("p", {class: "sub"}, where(s)), el("h2", {class: "mono", style: "font-size: 17px"}, s.name)),
+    el("div", {class: "cards2"}, [
+      ["Runs", String(s.runs), s.name === "verify" ? "verifiers spawned" : s.calls + " tool calls"],
+      ["Agent time per run", fmtMin(s.agent_s / n), fmtMin(s.agent_s) + " in total"],
+      ["Tokens per run", fmtTok(total / n), pct(s.tokens.subagents, total) + " in subagents"],
+      ["Waiting per run", fmtMin(s.wait_s / n), fmtMin(s.wait_s) + " in total"],
+    ].map(([k, val, sub]) => el("div", {class: "mini"}, el("div", {class: "k"}, k), el("div", {class: "v"}, val), el("div", {class: "s"}, sub)))),
+  ];
+  const rr = Object.entries(s.verify_rounds || {});
+  const reruns = [el("h3", {}, "Reruns")];
+  if (rr.length) {
+    const max = Math.max(...rr.map(([, k]) => k));
+    reruns.push(el("p", {class: "sub", style: "font-size: 12px"}, "Verifiers spawned per run, by how many."));
+    const cols = "repeat(" + rr.length + ", minmax(0, 1fr))";
+    reruns.push(el("div", {class: "chart", style: "height: 110px; grid-template-columns: " + cols, role: "img", "aria-label": rr.map(([r, k]) => k + " runs had " + r).join(", ")}, rr.map(([r, k]) => el("div", {class: "col"}, el("span", {class: "n mono"}, String(k)), el("div", {class: "bar", style: "height: " + Math.round(k / max * 80) + "px; background: " + (r === "1" ? "var(--blue)" : "var(--orange)")})))));
+    reruns.push(el("div", {class: "labels", style: "grid-template-columns: " + cols}, rr.map(([r]) => el("span", {}, r))));
+  }
+  reruns.push(el("p", {style: "font-size: 13px; color: var(--body)"}, s.name === "verify" ? (v.verified_runs ? v.first_pass + " of " + v.verified_runs + " runs passed on their first recorded verdict. The chart counts verifiers spawned, which includes any that ended without recording one." : "No verified runs in the decision logs.") : "Reruns: " + rerunText(s) + "."));
+  kids.push(el("div", {style: "display: flex; flex-direction: column; gap: 8px"}, reruns));
+  const who = el("div", {class: "kv"});
+  for (const [m, k] of Object.entries(s.models).sort((a, b) => b[1] - a[1])) who.append(el("span", {class: "mono"}, modelName(m)), el("span", {class: "mono"}, fmtTok(k) + " (" + pct(k, total) + ")"));
+  for (const [a, k] of Object.entries(s.subagents)) who.append(el("span", {}, k + " × " + a), el("span", {class: "mono"}, "subagent"));
+  kids.push(el("div", {style: "display: flex; flex-direction: column; gap: 8px"}, el("h3", {}, "Who did the work"), who,
+    el("p", {class: "sub", style: "font-size: 12px"}, Object.keys(s.models).length > 1 ? "Each model's share of this skill's tokens; compare its runs, time and reruns once both have enough runs." : "One model did all of this skill's work, so there is nothing to compare yet.")));
+  host.replaceChildren(...kids);
+}
+renderSkills();
+
+// Scripts
+const sh = document.getElementById("scripts-body");
+if (!S.scripts.length) {
+  sh.append(el("div", {class: "empty", role: "status"}, el("div", {}, el("b", {style: "display: block; font-weight: 600"}, "No script events yet"), "Scripts report here once a keel script that settles a step, such as keel merge, has run: each call appends its exit, reason and time to ~/.local/state/keel/events.jsonl.")));
+} else {
+  const t = el("table", {});
+  t.append(el("tr", {}, el("th", {}, "Script"), el("th", {class: "r"}, "Calls"), el("th", {}, "Exit 0 / 2 / 1"), el("th", {}, "Top exit-2 reason"), el("th", {class: "r"}, "Median time")));
+  for (const s of S.scripts) {
+    const e = s.exits, ok = e["0"] || 0, ask = e["2"] || 0, broke = s.calls - ok - ask;
+    t.append(el("tr", {}, el("td", {class: "mono nowrap"}, "keel " + s.cmd), el("td", {class: "r mono"}, String(s.calls)),
+      el("td", {}, meter([[ok, "var(--green)"], [ask, "var(--orange)"], [broke, "var(--ink)"]], s.calls, ok + " settled, " + ask + " handed back, " + broke + " broke", ok + "/" + ask + "/" + broke)),
+      el("td", {style: "font-size: 12px"}, s.handed_back.length ? s.handed_back[0][0] + " (" + s.handed_back[0][1] + ")" : "-"),
+      el("td", {class: "r mono"}, s.median_ms == null ? "-" : s.median_ms + " ms")));
+  }
+  sh.append(el("div", {class: "scroll"}, t));
+}
+</script>
+</body>
+</html>
