@@ -1569,8 +1569,8 @@ merge_pr() { # merge_pr <squash|commit> [PR number]
   esac
 }
 
-# `keel dash` writes keel stats into one self-contained page and opens it:
-# no server, nothing left running. Every < in the data is escaped, so no text
+# `keel dash` writes keel stats into one self-contained page and opens it,
+# leaving nothing running. Every < in the data is escaped, so no text
 # from a run can end the script tag that holds it.
 dash() { # dash [keel stats options]
   local page="$STATE_DIR/dash.html" json opener
@@ -1582,6 +1582,17 @@ dash() { # dash [keel stats options]
     sed '1,/^__STATS__$/d' "$LIB_DIR/dash.html"
   } | write_atomic "$page"
   echo "$page"
+  # On a server reached over SSH, a tethered laptop's browser is the one to
+  # use; tether opens only http URLs, so the page is served once, then stops.
+  if command -v tether >/dev/null && tether status >/dev/null 2>&1; then
+    local url out
+    if url=$(python3 -I "$LIB_DIR/serve-once.py" "$page") && out=$(tether open "$url" 2>&1); then
+      echo "opened $url in the tethered browser"
+      return 0
+    fi
+    echo "keel: tether could not open it${out:+ ($out)}; open ${url:-the path above} in a browser" >&2
+    return 0
+  fi
   for opener in xdg-open open; do
     if command -v "$opener" >/dev/null; then
       "$opener" "$page" >/dev/null 2>&1 || echo "keel: $opener could not open it; open the path above in a browser" >&2
