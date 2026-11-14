@@ -24,3 +24,37 @@ jobs:
       - name: eval results
         if: github.event_name == 'pull_request'
         run: learning/evals/ci-check.sh "origin/${{ github.base_ref }}"
+
+  # Every merge to main whose tests pass becomes a release, so a rollback can go
+  # back to any single PR. gh release create makes the tag on this run's own
+  # commit. Runs are not queued, since a concurrency group drops all but one
+  # pending run: when two take the same number, the loser recounts and retries.
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n "$(git tag --points-at "$GITHUB_SHA" 'v*')" ]]; then
+            echo "$GITHUB_SHA is already released"
+            exit 0
+          fi
+          # The PR's title, whichever way it was merged; else the commit's headline.
+          notes=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].title // empty')
+          [[ -n "$notes" ]] || notes=$(git log -1 --format=%s "$GITHUB_SHA")
+          for attempt in 1 2 3; do
+            version=$(rails/lib/next-version.sh)
+            gh release create "$version" --target "$GITHUB_SHA" --title "$version" --notes "$notes" && exit 0
+            echo "attempt $attempt: $version was taken; fetching tags and counting again"
+            git fetch --tags --force
+          done
+          exit 1

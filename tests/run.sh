@@ -1213,6 +1213,19 @@ for f in "$PB"/*.md; do
   check "$(basename "$f" .md) has numbered steps starting at 1" grep -q '^1\. ' "$f"
 done
 
+section "release versions"
+REL="$T/release-repo"
+git init -q "$REL" && git -C "$REL" commit -q --allow-empty -m root
+next_version() { (cd "$REL" && "$ROOT/rails/lib/next-version.sh"); }
+TODAY=$(date -u +%Y.%m.%d)
+eq "the first release of the day is .1" "v$TODAY.1" "$(next_version)"
+git -C "$REL" tag "v$TODAY.1"
+eq "a second release the same day gets the next number" "v$TODAY.2" "$(next_version)"
+git -C "$REL" tag "v$TODAY.9" && git -C "$REL" tag "v$TODAY.10"
+eq "the count is numeric, so .10 follows .9" "v$TODAY.11" "$(next_version)"
+git -C "$REL" tag "v2000.01.01.40" && git -C "$REL" tag "v$TODAY.99-rc"
+eq "another day's tags and other names do not count" "v$TODAY.11" "$(next_version)"
+
 section "isolation"
 eq "harness paths are byte for byte unchanged after every keel command above" "$before" "$(snapshot_harness)"
 # The check above is only worth something if it can fail: an install pointed
