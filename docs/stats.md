@@ -30,8 +30,13 @@ Each transcript's totals are cached under `~/.local/state/keel/stats-cache/`, ke
 
 ## How it counts
 
-- **A skill** is the first `/name` in a playbook step's text, since a step that runs a skill names it, such as `/audit-issue`.
-  A step that names none counts as `<playbook> step <n>`, the time before step 1 as `router`, and each `keel-verifier` spawn as `verify`; a step naming `/verify` counts as its playbook's own step, so `verify` holds verifier spawns alone.
+- **A skill** runs in a playbook step when the step's text runs it "with", "through" or "run" `/name`, such as "Audit it with `/audit-issue`".
+  A step that only mentions one, such as "shipping is `/ship`", runs none and counts as `<playbook> step <n>`, as does a step naming nothing; the time before step 1 counts as `router`, and each `keel-verifier` spawn as `verify`; a step naming `/verify` counts as its playbook's own step, so `verify` holds verifier spawns alone.
+- **A skill invoked directly** counts too: one you typed as `/name`, or one the agent called through its Skill tool, when `name` is installed under `~/.keel/claude/skills/`.
+  The invocation holds the calls, time and tokens that follow it until the next message you type or the run's next step, whichever comes first.
+  An agent loading the skill you just typed is that same run, and a skill invoked inside the step that runs it adds its time to that skill but not another run.
+  Claude Code's own commands, such as `/login`, and other packs' skills are left out.
+- **What started a run** is the installed skill invoked directly that held the work when its `keel run start` ran, such as `/pickup`, else the router.
   Step texts come from the playbook files as they are now, so a run that followed an older version is named by the current one.
 - **A run of a skill** is a run entering the step that runs it, found from the `keel run start` and `keel run step <n> doing` calls in the transcript that ran. A start counts only when a run folder for its playbook began while the call ran, so a start keel refused, or text that only mentions one, counts nothing; a call the user denied or a hook refused never ran. A compound command that failed on another part still moved the run.
 - **Agent time** is the gaps between a session's messages while the step is current, leaving out gaps over 30 minutes as idle.
@@ -50,8 +55,8 @@ Fields are only ever added, never renamed or removed; a change that would break 
 |---|---|
 | `version` | `1` |
 | `since`, `repo` | the filters given, or null |
-| `skills[]` | `{name, where, runs, calls, agent_s, wait_s, tokens: {session, subagents}, models: {<model>: tokens}, subagents: {<agent type>: count}, reruns}`, most run first; `where` lists the `<playbook> <step>` places it ran from; `verify` adds `verify_rounds: {<rounds>: runs}`, how many verifiers each run spawned |
-| `playbooks[]` | `{name, runs, states: {<state>: runs}, median_minutes, versions, steps[]}`, with `versions` the number of playbook hashes its runs followed, and each step `{n, title, skill, done, skipped, open, skip_codes: {<code>: runs}, attempts, rerun_runs, attempt_s}` from the runs' status files, with `attempt_s` the wall time of its closed attempts, waits included |
+| `skills[]` | `{name, where, runs, calls, agent_s, wait_s, tokens: {session, subagents}, models: {<model>: tokens}, subagents: {<agent type>: count}, reruns}`, most run first; `where` lists the `<playbook> <step>` places it ran from; `verify` adds `verify_rounds: {<rounds>: runs}`, how many verifiers each run spawned; `how` lists the ways it ran, most runs first, from `step`, `typed`, `agent`, `verifier` and `router`; `invoked: {typed, agent}` counts its direct invocations |
+| `playbooks[]` | `{name, runs, states: {<state>: runs}, median_minutes, versions, started_by: {<skill or "router">: runs}, steps[]}`, with `versions` the number of playbook hashes its runs followed, `started_by` counted from the transcripts that started its runs, and each step `{n, title, skill, done, skipped, open, skip_codes: {<code>: runs}, attempts, rerun_runs, attempt_s}` from the runs' status files, with `attempt_s` the wall time of its closed attempts, waits included |
 | `scripts[]` | `{cmd, calls, exits: {<code>: calls}, handed_back: [[reason, calls]], median_ms}` from `events.jsonl`, with the five commonest exit-2 reasons |
 | `verifier` | `{verified_runs, first_pass, rounds_to_pass: {<rounds>: runs}}`, from the verifier rows in each run's `decisions.tsv` |
 | `days[]` | `{day, runs, pass, fail}` per day: runs started, and verdicts in runs and outside them |

@@ -1248,6 +1248,61 @@ eq "a damaged cache entry is read again from its transcript, not trusted" '[0,2]
 check "leaving no half-written cache file" bash -c "! ls '$SD'/keel/stats-cache/*.tmp 2>/dev/null"
 refute "a bad --since is refused" ks --since yesterday
 
+# Skills invoked directly, in a session of their own whose times are set so
+# each number can be worked out by hand: you type /pickup, the agent loads it
+# and starts an issue run; in step 5 the agent loads /mockup, which that step
+# runs; in step 11 it calls a skill keel does not install; in step 12 you type
+# /ship and then /login; after the run it calls /spec, and you reply.
+inv="$HOME/.keel/claude/projects/-work-inv"
+mkdir -p "$inv" "$SD/keel/runs/archive/-work-inv/2026-11-12T12:00:20Z"
+echo '{"playbook":"issue","tree":"/work/inv","state":"done","started_at":"2026-11-12T12:00:20Z","steps":[]}' \
+  >"$SD/keel/runs/archive/-work-inv/2026-11-12T12:00:20Z/status.json"
+python3 -I - "$inv/s3.jsonl" <<'EOF'
+import json, sys
+lines = []
+def at(sec):
+    return f"2026-11-12T12:{sec // 60:02d}:{sec % 60:02d}Z"
+def typed(sec, name):
+    lines.append({"type": "user", "timestamp": at(sec), "cwd": "/work/inv", "message": {"content": f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>"}})
+def call(sec, mid, tool, inp):
+    lines.append({"type": "assistant", "timestamp": at(sec), "cwd": "/work/inv", "message": {"id": mid, "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": mid, "name": tool, "input": inp}]}})
+    lines.append({"type": "user", "timestamp": at(sec + 1), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": mid, "content": ""}]}})
+typed(0, "pickup")
+lines.append({"type": "user", "isMeta": True, "timestamp": at(1), "cwd": "/work/inv", "message": {"content": [{"type": "text", "text": "Base directory for this skill"}]}})
+call(5, "m1", "Skill", {"skill": "pickup"})
+call(20, "m2", "Bash", {"command": "keel run start --playbook issue --goal g --steps f"})
+call(30, "m3", "Bash", {"command": "keel run step 5 doing"})
+call(40, "m4", "Skill", {"skill": "mockup"})
+call(50, "m5", "Bash", {"command": "keel run step 11 doing"})
+call(60, "m6", "Skill", {"skill": "simplify"})
+call(90, "m7", "Bash", {"command": "keel run step 12 doing"})
+typed(120, "ship")
+lines.append({"type": "assistant", "timestamp": at(125), "cwd": "/work/inv", "message": {"id": "m8", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "text", "text": "shipping"}]}})
+typed(130, "login")
+call(140, "m9", "Bash", {"command": "keel run stop done"})
+call(150, "m10", "Skill", {"skill": "spec"})
+lines.append({"type": "user", "timestamp": at(160), "cwd": "/work/inv", "message": {"content": "thanks"}})
+lines.append({"type": "assistant", "timestamp": at(170), "cwd": "/work/inv", "message": {"id": "m11", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "text", "text": "you're welcome"}]}})
+with open(sys.argv[1], "w") as f:
+    f.writelines(json.dumps(l) + "\n" for l in lines)
+EOF
+out=$(ks --json --repo inv)
+skill() { jq -cS --arg n "$1" ".skills[] | select(.name == \$n) | $2" <<<"$out"; }
+eq "a skill you type is one run, even when the agent then loads it, holding the work until its run starts" \
+  '[21,["typed"],{"agent":0,"typed":1},1]' "$(skill pickup '[.agent_s, .how, .invoked, .runs]')"
+eq "and the run it starts says /pickup started it" '{"pickup":1}' "$(jq -cS '.playbooks[] | select(.name == "issue") | .started_by' <<<"$out")"
+eq "a skill the agent loads in the step that runs it adds its time to that skill, not a second run" \
+  '[20,["step"],{"agent":0,"typed":0},1]' "$(skill mockup '[.agent_s, .how, .invoked, .runs]')"
+eq "a skill keel does not install gets no row, and its time stays with the step it ran in" \
+  '[40,[]]' "$(jq -c --argjson s "$(skill "issue step 11" '.agent_s')" '[$s, [.skills[].name | select(. == "simplify" or . == "login")]]' <<<"$out")"
+eq "a step that only mentions /ship counts as its own step, keeping the time /login took" '[49,1]' \
+  "$(skill "issue step 12" '[.agent_s, .runs]')"
+eq "and a /ship you type is a run of ship, holding the work until your next message" '[10,{"agent":0,"typed":1},1]' \
+  "$(skill ship '[.agent_s, .invoked, .runs]')"
+eq "a skill the agent calls outside a run is an agent run, with your reply as its wait" '[1,["agent"],{"agent":1,"typed":0},1,9]' \
+  "$(skill spec '[.agent_s, .how, .invoked, .runs, .wait_s]')"
+rm -rf "$inv" "$SD/keel/runs/archive/-work-inv"
+
 section "dash"
 # A step title that would end the page's script tag if written into it raw.
 tagged="$SD/keel/runs/archive/-work-app/2026-11-12T09:00:00Z"
