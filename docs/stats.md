@@ -14,6 +14,8 @@ On a server with a laptop connected through [tether](https://github.com/anthonyb
 Without a tethered laptop it uses `xdg-open` or `open`, and with neither, or when one fails, it prints the path or URL to open by hand.
 The page needs no server and no network, follows the system's light or dark setting, and opens a view straight from `#overview`, `#skills` or `#scripts`.
 Playbooks lists every playbook in `method/playbooks/`, those with no runs in range greyed, and lays the chosen one out step by step: what started its runs, each step's done and skipped counts, its agent time and tokens per run, and the chosen step's text.
+Skills lists every skill installed in `~/.keel/claude/skills/`, each tagged with how it mostly runs (a playbook step, typed by you, called by the agent, the verifier or the router); those not run in range sit greyed below the rest, and "Run in range" hides them.
+The header carries the keel galley, which is also the page's icon, and names `--since` or `--repo` beside the title when either is given.
 On Skills, picking a row shows what it says under the table: a skill's `SKILL.md` from `~/.keel/claude/skills/`, a step's line from its playbook, or `method/router.md` for the router, each read when the page is written.
 The text is rendered from Markdown as text only, so a skill's text cannot run on the page; `keel stats --json` stays counts only.
 

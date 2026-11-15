@@ -1344,6 +1344,13 @@ eq "a step that names no skill holds its line from the playbook" "$(sed -n 's/^1
 eq "the router holds method/router.md" "$(cat "$ROOT/method/router.md")" "$(embedded texts | jq -r '.router.text')"
 eq "and a skill's text that would end the script tag arrives as written" "</script><b>x</b>" "$(embedded texts | jq -r '.tagged.text')"
 eq "with a quoted description shown without its quotes" "Quoted: </script>" "$(embedded texts | jq -r '.tagged.lead')"
+eq "every installed skill has its text on the page, so one with no runs is still listed" \
+  "$(for d in "$HOME"/.keel/claude/skills/*/SKILL.md; do basename "$(dirname "$d")"; done | sort | jq -Rsc 'split("\n")[:-1]')" \
+  "$(embedded texts | jq -c '[keys[] | select(test(" ") | not) | select(. != "router")] | sort')"
+# Any URL the browser would fetch: an attribute, a protocol-relative one, a CSS url() or @import.
+refute "and the page loads nothing over the network, its icon included" \
+  grep -qE '(href|src)="(https?:)?//|url\(["'\'']?(https?:)?//|@import' "$page"
+check "with the icon drawn inline" grep -q '<link rel="icon" href="data:image/svg+xml,' "$page"
 eq "each playbook carries its purpose, the first line under its title" "$(sed -n 3p "$ROOT/method/playbooks/bug-fix.md")" \
   "$(embedded texts | jq -r '."playbook bug-fix".lead')"
 eq "and each of its steps the skill it runs, or none" '["audit-code",""]' \
