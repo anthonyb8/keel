@@ -535,10 +535,12 @@ def skill_of(playbook: str, step: int, steps: dict[str, dict[int, str]]) -> str:
 
 
 class Text(TypedDict):
-    """What `keel dash` shows of a skill: its description and its Markdown."""
+    """What `keel dash` shows of a name: its lead line, its Markdown, and for a
+    playbook step the skill it runs, or empty."""
 
     lead: str
     text: str
+    skill: str
 
 
 def front_matter(body: str) -> tuple[str, str]:
@@ -553,22 +555,29 @@ def front_matter(body: str) -> tuple[str, str]:
 
 
 def texts(claude_dir: str, method_dir: str) -> dict[str, Text]:
-    """The text of every name keel stats can list: each installed skill, each
-    playbook step counted as its own, and the router."""
+    """The text of every name keel dash shows: each installed skill, the router,
+    each playbook as `playbook <name>` with its purpose as the lead, and each of
+    its steps as `<playbook> step <n>` with the skill it runs. A name with a
+    space cannot be a skill's, so a playbook and a skill may share a name."""
     out: dict[str, Text] = {}
     for path in sorted(glob.glob(os.path.join(claude_dir, "skills", "*", "SKILL.md"))):
         with open(path) as f:
             lead, body = front_matter(f.read())
-        out[os.path.basename(os.path.dirname(path))] = {"lead": lead, "text": body}
+        out[os.path.basename(os.path.dirname(path))] = {"lead": lead, "text": body, "skill": ""}
     all_steps = playbook_steps(method_dir)
     for playbook, steps in all_steps.items():
+        with open(os.path.join(method_dir, "playbooks", playbook + ".md")) as f:
+            body = f.read().strip()
+        # The purpose is the first line of prose under the title.
+        purpose = next((line.strip() for line in body.splitlines()[1:] if line.strip() and not line.startswith("#")), "")
+        out[f"playbook {playbook}"] = {"lead": purpose, "text": "", "skill": ""}
         for n, line in steps.items():
-            if (name := skill_of(playbook, n, all_steps)) == f"{playbook} step {n}":
-                out[name] = {"lead": "", "text": line}
+            name = skill_of(playbook, n, all_steps)
+            out[f"{playbook} step {n}"] = {"lead": "", "text": line, "skill": "" if name == f"{playbook} step {n}" else name}
     router = os.path.join(method_dir, "router.md")
     if os.path.isfile(router):
         with open(router) as f:
-            out["router"] = {"lead": "", "text": f.read().strip()}
+            out["router"] = {"lead": "", "text": f.read().strip(), "skill": ""}
     return out
 
 
@@ -719,6 +728,9 @@ class StepRow(TypedDict):
     attempts: int
     rerun_runs: int
     attempt_s: float
+    entered: int
+    agent_s: float
+    tokens: Counts
 
 
 class PlaybookRow(TypedDict):
@@ -732,7 +744,7 @@ class PlaybookRow(TypedDict):
 
 
 def playbooks(all_runs: list[tuple[dict[str, object], str]], steps: dict[str, dict[int, str]],
-              started_by: dict[str, Counts]) -> list[PlaybookRow]:
+              started_by: dict[str, Counts], spent: dict[tuple[str, int], Bucket]) -> list[PlaybookRow]:
     grouped: dict[str, list[dict[str, object]]] = collections.defaultdict(list)
     for run, _ in all_runs:
         grouped[text(run.get("playbook")) or "unknown"].append(run)
@@ -747,8 +759,11 @@ def playbooks(all_runs: list[tuple[dict[str, object], str]], steps: dict[str, di
             for i, s in enumerate(run_steps if isinstance(run_steps, list) else [], 1):
                 if not isinstance(s, dict):
                     continue
-                row = rows.setdefault(i, StepRow(n=i, title="", skill=skill_of(name, i, steps), done=0, skipped=0,
-                                                 open=0, skip_codes={}, attempts=0, rerun_runs=0, attempt_s=0.0))
+                b = spent.get((name, i))
+                row = rows.setdefault(i, StepRow(
+                    n=i, title="", skill=skill_of(name, i, steps), done=0, skipped=0, open=0, skip_codes={}, attempts=0,
+                    rerun_runs=0, attempt_s=0.0, entered=b["runs"] if b else 0, agent_s=round(b["agent_s"]) if b else 0,
+                    tokens={"session": b["session_tokens"], "subagents": b["subagent_tokens"]} if b else {"session": 0, "subagents": 0}))
                 titles[i][text(s.get("title")) or ""] += 1
                 state = s.get("state")
                 if state == "done":
@@ -848,19 +863,41 @@ def report(state_dir: str, claude_dir: str, method_dir: str, since_day: str | No
     unread = sum(s["unread"] for s in all_sessions)
     installed = {os.path.basename(os.path.dirname(p)) for p in glob.glob(os.path.join(claude_dir, "skills", "*", "SKILL.md"))}
     skill_rows = skills(all_sessions, steps, installed, since, repo)
-    # What started each run, from the transcripts that started them.
+    # What started each run, and what each step spent, from the transcripts.
     started_by: dict[str, Counts] = collections.defaultdict(dict)
+    spent: dict[tuple[str, int], Bucket] = {}
+
+    def step_total(playbook: str, n: int) -> Bucket:
+        return spent.setdefault((playbook, n), Bucket(
+            playbook=playbook, step=n, day="", runs=0, reentries=0, calls=0, agent_s=0.0,
+            wait_s=0.0, session_tokens=0, subagent_tokens=0, models={}, subagents={}))
     for s in all_sessions:
         if in_repo(s["cwd"], repo):
             for x in s["starts"]:
                 if x["day"] >= since:
                     add(started_by[x["playbook"]], {x["by"] if x["by"] in installed else "router": 1})
+            for b in s["buckets"]:
+                if b["day"] >= since:
+                    t = step_total(b["playbook"], b["step"])
+                    for k in ("runs", "session_tokens", "subagent_tokens"):
+                        t[k] += b[k]
+                    t["agent_s"] += b["agent_s"]
+            # A skill invoked in a step is that step's work when the step runs
+            # that same skill or the skill is not keel's, as skills() counts it.
+            for i in s["invocations"]:
+                playbook, _, n = i["step"].rpartition(" ")
+                if (i["day"] >= since and playbook and n.isdigit()
+                        and (i["skill"] not in installed or skill_of(playbook, int(n), steps) == i["skill"])):
+                    t = step_total(playbook, int(n))
+                    for k in ("session_tokens", "subagent_tokens"):
+                        t[k] += i[k]
+                    t["agent_s"] += i["agent_s"]
     return {
         "version": VERSION,
         "since": since_day,
         "repo": repo,
         "skills": skill_rows,
-        "playbooks": playbooks(all_runs, steps, started_by),
+        "playbooks": playbooks(all_runs, steps, started_by, spent),
         "scripts": scripts(state_dir, since, repo),
         "verifier": quality,
         "days": [{"day": d, **c} for d, c in sorted(days.items()) if d >= since],

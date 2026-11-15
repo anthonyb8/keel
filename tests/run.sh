@@ -1189,6 +1189,8 @@ eq "a step naming no skill counts as the playbook's step, with going back to it 
   "$(skill "bug-fix step 1" '[.agent_s, .calls, .reruns, .runs]')"
 # m2's second line falls after its own `step 1 doing`, so a lost dedup shows in step 1, not the router.
 eq "a message split over two lines counts its tokens once" "440" "$(skill "bug-fix step 1" '.tokens.session')"
+eq "a run's step carries its own tokens, its subagents' included" '{"session":440,"subagents":1000}' \
+  "$(jq -cS '.playbooks[0].steps[4].tokens' <<<"$out")"
 eq "a run's steps carry their attempts, attempt time and skip codes" '[2,145,1,{"already-done":1}]' \
   "$(jq -c '.playbooks[0].steps | [.[0].attempts, .[0].attempt_s, .[0].rerun_runs, .[1].skip_codes]' <<<"$out")"
 eq "scripts are counted from events.jsonl, with what they handed back" '[2,{"0":1,"2":1},[["a check is still pending",1]]]' \
@@ -1255,7 +1257,7 @@ refute "a bad --since is refused" ks --since yesterday
 # /ship and then /login; after the run it calls /spec, and you reply.
 inv="$HOME/.keel/claude/projects/-work-inv"
 mkdir -p "$inv" "$SD/keel/runs/archive/-work-inv/2026-11-12T12:00:20Z"
-echo '{"playbook":"issue","tree":"/work/inv","state":"done","started_at":"2026-11-12T12:00:20Z","steps":[]}' \
+echo "{\"playbook\":\"issue\",\"tree\":\"/work/inv\",\"state\":\"done\",\"started_at\":\"2026-11-12T12:00:20Z\",\"steps\":[$(printf '{"title":"t","state":"done"},%.0s' $(seq 11)){\"title\":\"t\",\"state\":\"done\"}]}" \
   >"$SD/keel/runs/archive/-work-inv/2026-11-12T12:00:20Z/status.json"
 python3 -I - "$inv/s3.jsonl" <<'EOF'
 import json, sys
@@ -1301,6 +1303,9 @@ eq "and a /ship you type is a run of ship, holding the work until your next mess
   "$(skill ship '[.agent_s, .invoked, .runs]')"
 eq "a skill the agent calls outside a run is an agent run, with your reply as its wait" '[1,["agent"],{"agent":1,"typed":0},1,9]' \
   "$(skill spec '[.agent_s, .how, .invoked, .runs, .wait_s]')"
+eq "each playbook step holds its own time and tokens, with what its own skill and other packs' skills spent in it, but not another skill keel installs" \
+  '[[5,1,20,20],[11,1,40,20],[12,1,49,20]]' \
+  "$(jq -c '[.playbooks[] | select(.name == "issue") | .steps[] | select(.n == 5 or .n == 11 or .n == 12) | [.n, .entered, .agent_s, .tokens.session]]' <<<"$out")"
 rm -rf "$inv" "$SD/keel/runs/archive/-work-inv"
 
 section "dash"
@@ -1339,6 +1344,10 @@ eq "a step that names no skill holds its line from the playbook" "$(sed -n 's/^1
 eq "the router holds method/router.md" "$(cat "$ROOT/method/router.md")" "$(embedded texts | jq -r '.router.text')"
 eq "and a skill's text that would end the script tag arrives as written" "</script><b>x</b>" "$(embedded texts | jq -r '.tagged.text')"
 eq "with a quoted description shown without its quotes" "Quoted: </script>" "$(embedded texts | jq -r '.tagged.lead')"
+eq "each playbook carries its purpose, the first line under its title" "$(sed -n 3p "$ROOT/method/playbooks/bug-fix.md")" \
+  "$(embedded texts | jq -r '."playbook bug-fix".lead')"
+eq "and each of its steps the skill it runs, or none" '["audit-code",""]' \
+  "$(embedded texts | jq -c '[."bug-fix step 5".skill, ."bug-fix step 1".skill]')"
 XDG_STATE_HOME="$SD" "$K" dash --repo late >/dev/null
 eq "it passes --since and --repo on to keel stats" "$(ks --json --repo late | jq -cS '.skills | map(.name)')" \
   "$(sed -n '/<script id="stats"/,/<\/script>/p' "$page" | sed '1d;$d' | jq -cS '.skills | map(.name)')"
