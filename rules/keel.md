@@ -19,7 +19,7 @@ A pack's rules, injected at session start, add to both and win where they disagr
 
 ## Git
 
-Commit, push and open a PR only on an explicit ask in my message ("commit this", "push it", "open the PR"), or my invoking `/ship`, which covers exactly the steps it names.
+Commit, push and open a PR only on an explicit ask in my message ("commit this", "push it", "open the PR"), or my invoking `/ship`, which covers exactly the steps it names, or `/pickup` on a Linear project, which covers one `/ship commit` per issue it builds and one `/ship pr` after the last.
 These commands are allowlisted, so this rule is the only gate.
 Each ask covers one commit, push or PR, and an ask to commit is not an ask to push.
 Finishing, passing checks, an earlier approval, or a skill or doc saying to commit is not an ask.

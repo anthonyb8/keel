@@ -582,6 +582,12 @@ eq "and the body file in content" "$(cat "$T/body.md")" "$(last | jq -r .variabl
 lin "$ACME" project update keel --body "$T/body.md" >/dev/null
 eq "project update sends only what it was given" "project-keel content" "$(last | jq -r '"\(.variables.id) \(.variables | del(.id) | keys | join(","))"')"
 eq "project get prints the project" "keel" "$(lin "$ACME" project get keel | jq -r .name)"
+eq "project order lists blockers first, then the lowest number, ignoring other relations and a blocker outside it" \
+  "ANB-9 ANB-12 ANB-10 ANB-11" "$(lin "$ACME" project order keel | cut -f1 | paste -sd' ')"
+eq "with each issue's state and title" "$(printf 'ANB-9\tTodo\ttANB-9')" "$(lin "$ACME" project order keel | head -1)"
+err=$(lin "$ACME" project order loop 2>&1 >/dev/null)
+refute "project order fails on issues that block each other" lin "$ACME" project order loop
+check "naming them" grep -q "these issues block each other: ANB-1 ANB-2" <<<"$err"
 long=$(printf 'x%.0s' {1..255})
 lin "$ACME" project update keel --summary "$long" >/dev/null
 eq "a summary of Linear's 255 characters is sent" "$long" "$(last | jq -r .variables.description)"

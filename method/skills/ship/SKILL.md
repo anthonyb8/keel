@@ -31,7 +31,7 @@ Read `~/.keel/claude/VOICE.md` before writing the commit message or the PR body.
 ## 2. Commit
 
 - `git status`, then `git add` exactly the files this work touched, never `-A` or `.`.
-- One commit: a headline prefixed with the issue ID from the branch name where the project uses one, then a body of two or three sentences on why, in VOICE.md's style.
+- One commit: a headline prefixed with the issue ID from the branch name where the project uses one, or with the issue being built in a project build, then a body of two or three sentences on why, in VOICE.md's style.
 - No co-author or agent attribution line.
 - Never amend, squash or rewrite an existing commit.
 - With nothing to commit but commits not yet on `origin`, go on to verify.
