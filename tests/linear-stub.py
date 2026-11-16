@@ -25,7 +25,30 @@ PROJECT_ISSUES = {
 }
 
 
+# keel issue begin's issues: each one's state and the issues blocking it, each
+# blocker as (identifier, state name, state type, project).
+BEGIN_ISSUES = {
+    "ANB-12": ("Backlog", [("ANB-8", "Done", "completed", "keel")]),
+    "ANB-60": ("In Review", []),
+    "ANB-61": ("Todo", [("ANB-62", "Todo", "unstarted", "other")]),
+    "ANB-63": ("In Progress", [("ANB-62", "Todo", "unstarted", "keel")]),
+    "ANB-64": ("Triage", []),
+    "ANB-65": ("Todo", [("ANB-66", "Todo", "unstarted", "keel")]),
+}
+# Each issue's state now, for update --only-from; any other issue is in Backlog.
+STATE_NOW = {"ANB-70": "In Progress"}
+
+
 def answer(query, variables):
+    if "IssueBegin" in query:
+        if variables["id"] not in BEGIN_ISSUES:
+            return None
+        state, blockers = BEGIN_ISSUES[variables["id"]]
+        return {"issue": {"identifier": variables["id"], "branchName": "x/" + variables["id"].lower() + "-foo",
+                          "state": {"name": state}, "project": {"name": "keel"},
+                          "inverseRelations": {"nodes": [{"type": "blocks", "issue": {
+                              "identifier": i, "state": {"name": n, "type": t}, "project": {"name": p}}}
+                              for i, n, t, p in blockers]}}}
     if "issueCreate" in query:
         return {"issueCreate": {"issue": {"id": "uuid-ANB-99", "identifier": "ANB-99", "url": "https://linear.test/ANB-99"}}}
     if "issueUpdate" in query:
@@ -51,7 +74,9 @@ def answer(query, variables):
         nodes = [{"id": "team-" + variables["key"]}] if variables["key"] in ("ANB", "OTH") else []
         return {"teams": {"nodes": nodes}, "organization": {"name": "Stub Org"}}
     if "states" in query:
-        return {"issue": {"team": {"states": {"nodes": [{"id": "state-todo", "name": "Todo"},
+        return {"issue": {"state": {"name": STATE_NOW.get(variables["id"], "Backlog")},
+                          "team": {"states": {"nodes": [{"id": "state-todo", "name": "Todo"},
+                                                        {"id": "state-in-progress", "name": "In Progress"},
                                                         {"id": "state-canceled", "name": "Canceled"}]}}}}
     if "issue(" in query:
         if variables["id"] == "ANB-404":

@@ -61,7 +61,7 @@ The verifier rounds a change took before it passed are counted from it.
 
 Each keel script a step calls appends one line per call to `~/.local/state/keel/events.jsonl`, so what each script settles, and why it hands work back, can be counted.
 Each line is `{at, cmd, args, exit, reason, ms, tree, playbook, step}`: the subcommand and its arguments, the exit code (0 settled, 2 handed to the agent, 1 broke), the exit-2 reason or the error, null on exit 0, how long it took in milliseconds, the tree it ran in, and the playbook and step (the run's `current`) of the tree's active run, null when it has none.
-`keel run`, `linear`, `verdict`, `verify-brief`, `stack`, `ship` and `merge` write it, with `cmd` the command and its verb, such as `run step` or `linear get`; each script added later calls the same helper.
+`keel run`, `linear`, `issue`, `verdict`, `verify-brief`, `stack`, `ship` and `merge` write it, with `cmd` the command and its verb, such as `run step` or `linear get`; each script added later calls the same helper.
 The step is the run's `current` once the call has finished, so `run step 3 done` records the step after it, and `run stop` records none.
 Hooks and `keel status`, which run on every tool call or are polled, write nothing of their own; a git-guard refusal shows as the `run decide` it records.
 Writing the line never changes the script's own exit code or output.

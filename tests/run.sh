@@ -599,6 +599,47 @@ err=$(lin "$ACME" project update keel --summary "${long}x" 2>&1 >/dev/null)
 check "one over is refused" grep -q "Linear allows 255" <<<"$err"
 eq "before anything is sent" "$requests" "$(sent)"
 
+# keel issue begin, from a branch named for ANB-12 in a project build whose
+# branch already holds a commit headed ANB-62.
+IB="$T/work/acme/begin"
+git clone -q "$T/remotes/acme/app" "$IB"
+git -C "$IB" switch -q -c x/anb-12-foo
+git -C "$IB" commit -q --allow-empty -m "ANB-62 Build the blocker"
+begin() { (cd "$IB" && "$K" issue begin "$@"; echo "exit $?"); }
+said() { sed '$d' <<<"$1" | jq -r "$2"; }
+res=$(begin)
+eq "with no ID it takes the branch name's, and goes on from Backlog past a blocker that is done" \
+  "exit 0|go|ANB-12|x/anb-12-foo|Backlog" "$(tail -1 <<<"$res")|$(said "$res" '[.result, .id, .branchName, .state] | join("|")')"
+res=$(begin ANB-60)
+eq "an issue In Review exits 2 with stop" "exit 2|stop|ANB-60 is In Review" "$(tail -1 <<<"$res")|$(said "$res" '[.result, .reason] | join("|")')"
+res=$(begin ANB-61)
+eq "an open blocker from another project exits 2 with ask, naming it" "exit 2|ask|ANB-61 is blocked by ANB-62, still open" \
+  "$(tail -1 <<<"$res")|$(said "$res" '[.result, .reason] | join("|")')"
+res=$(begin ANB-63)
+eq "from In Progress, one from the same project with a commit on this branch counts as cleared" "exit 0|go|In Progress|true" \
+  "$(tail -1 <<<"$res")|$(said "$res" '[.result, .state, (.blockers[0].cleared | tostring)] | join("|")')"
+eq "and the call is logged" '["issue begin",["begin","ANB-63"],0]' "$(tail -1 "$HOME/.local/state/keel/events.jsonl" | jq -c '[.cmd, .args, .exit]')"
+res=$(begin ANB-65)
+eq "but one from the same project with no commit on this branch is still open" "exit 2|ask|ANB-65 is blocked by ANB-66, still open" \
+  "$(tail -1 <<<"$res")|$(said "$res" '[.result, .reason] | join("|")')"
+res=$(begin ANB-64)
+eq "a state that is neither go nor stop exits 2 with ask" "exit 2|ask" "$(tail -1 <<<"$res")|$(said "$res" .result)"
+git -C "$IB" switch -q -c no-issue-here
+asked=$(sent IssueBegin)
+res=$(begin)
+eq "with neither an ID nor one in the branch name it exits 2 asking for the ID" "exit 2|ask" "$(tail -1 <<<"$res")|$(said "$res" .result)"
+eq "and sends nothing to Linear" "$asked" "$(sent IssueBegin)"
+eq "Linear without the issue exits 1" "exit 1" "$(begin ANB-404 2>/dev/null | tail -1)"
+updates=$(sent issueUpdate)
+eq "update --only-from on an issue in another state changes nothing and says so" \
+  "ANB-70 In Progress (unchanged: only from Backlog, Todo)|$updates" \
+  "$(lin "$ACME" update ANB-70 --state "In Progress" --only-from Backlog,Todo)|$(sent issueUpdate)"
+lin "$ACME" update ANB-71 --state "In Progress" --only-from Backlog,Todo >/dev/null
+eq "and moves one in a state it names" "state-in-progress" "$(last | jq -r .variables.stateId)"
+refute "--only-from with --body is refused, since the body would be dropped with the move" \
+  lin "$ACME" update ANB-70 --state "In Progress" --only-from Backlog,Todo --body "$T/body.md"
+eq "an ID given in lowercase is looked up uppercased" "ANB-60" "$(begin anb-60 >/dev/null; grep IssueBegin "$T/linear.log" | tail -1 | jq -r .variables.id)"
+
 # Every script a step calls logs each call; an unwritable log changes nothing.
 EVL="$HOME/.local/state/keel/events.jsonl"
 logged_calls() { # each read-only logged call's output and exit, from $ACME
