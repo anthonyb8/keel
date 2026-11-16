@@ -5,7 +5,7 @@ Invoking `/pickup` on the project is the ask for one `/ship commit` per issue it
 
 ## Steps
 
-1. Resolve the project: the argument, a Linear project's name; with none, ask, and never guess or search for one.
+1. Resolve the project: the argument, a Linear project's name or code, such as P-ANB-12, and for a code its name from `keel linear project get <code>`, used from then on; with none, ask, and never guess or search for one.
 2. List its issues in build order with `keel linear project order "<name>"`; the ones still to build are in Backlog, Todo or In Progress with no commit on this branch whose headline starts with their ID.
 3. Open the project's tree with `EnterWorktree name=<branch prefix>/<project-slug>`, using the prefix this repository's branches use, unless the session is already in a tree on that branch, and name the session `<project> short slug`.
 4. Audit each issue still to build with `/audit-issue`, in order, unless its comments already hold its answered audit decisions, and stop once for the answers to all their open decisions, grouped by issue **(stop)**.

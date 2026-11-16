@@ -8,4 +8,4 @@ argument-hint: "ABC-123 | \"Project name\""
 
 Run the `issue` playbook, `~/.keel/method/playbooks/issue.md`, for the ID given, as the router describes: restate the goal, name the playbook, and open the todo list with its steps word for word.
 
-An argument that is not exactly an issue ID, the whole of it matching `[A-Za-z]+-[0-9]+`, is a Linear project's name: run the `project` playbook, `~/.keel/method/playbooks/project.md`, for it the same way.
+An argument that is not exactly an issue ID, the whole of it matching `[A-Za-z]+-[0-9]+`, is a Linear project's name or code, such as `P-ANB-12`: run the `project` playbook, `~/.keel/method/playbooks/project.md`, for it the same way.

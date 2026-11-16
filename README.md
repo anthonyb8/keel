@@ -61,7 +61,7 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
   keel's stack state lives in the tree's git dir as `keel-stack`, apart from harness's.
 - **git-guard.** A `PreToolUse` hook refuses any merge, rebase, cherry-pick or revert that would move a protected branch: the pack's base, the default branch and the pack's `protected` list, as `keel protected` prints them.
   What it cannot place, such as a git call inside `bash -c`, it refuses rather than guesses.
-- **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`, whose `order` lists a project's issues blockers first.
+- **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`, which takes a project's name or its code, such as `P-ANB-12`, and whose `order` lists its issues blockers first.
   The repository picks the workspace through `~/.config/keel/linear`, one line per origin glob: `*github.com[/:]anthonyb8/* ANB LINEAR_API_KEY_PERSONAL`, meaning the team key and the env var holding that workspace's key.
   A pack's `linear` file still names the team for the repositories it owns. The key is sent in a header file, never on a command line, and never printed.
 - **Starting an issue.** `keel issue begin [ID]` takes the ID, else the branch name's, and reads the issue's state and open blockers: it exits 0 with `go`, or 2 with `stop` or `ask` and why, counting a blocker from the same project as cleared once a commit on the branch is headed with its ID; `keel linear update <ID> --state <name> --only-from <state,...>` moves an issue only from those states.

@@ -25,7 +25,7 @@
 #                               update <ID> --state <name> --only-from <state,...>
 #                               comment <ID> --body <file>
 #                               relate <A> blocks <B>
-#                               project create|get|order|update <name> [--summary <s>] [--body <file>]
+#                               project create|get|order|update <name or code, such as P-ANB-12> [--summary <s>] [--body <file>]
 #   keel template [name] [dir]
 #                             print the issue or project template that applies in dir; no name lists them
 #   keel run start --playbook <name> --goal <text> [--steps <file>] [--replace]
@@ -631,9 +631,23 @@ team_id() {
     jq -er '"\(.teams.nodes[0].id // error) \(.organization.name)"' || die "no team $1 in this workspace"
 }
 
+# A project is found by its name, else, when the argument looks like one, by
+# its code, such as P-ANB-12, which Linear's project(id:) takes. The name goes
+# first, since a lookup by name never errors on a miss; Linear answers an
+# unknown code with an error, which here means only "not found".
+project_find() { # project_find <name or code> <fields>
+  local p
+  p=$(gql "query(\$name: String!) { projects(first: 1, filter: {name: {eq: \$name}}) { nodes { $2 } } }" --arg name "$1" |
+    jq '.projects.nodes[0] // empty') || exit 1
+  if [[ -z "$p" && "$1" =~ ^P-[A-Z]+-[0-9]+$ ]]; then
+    p=$(gql "query(\$id: String!) { project(id: \$id) { $2 } }" --arg id "$1" 2>/dev/null | jq '.project // empty') || p=""
+    [[ -n "$p" ]] || die "no project named or coded $1"
+  fi
+  [[ -n "$p" ]] || die "no project named $1"
+  echo "$p"
+}
 project_id() {
-  gql 'query($name: String!) { projects(filter: {name: {eq: $name}}) { nodes { id } } }' --arg name "$1" |
-    jq -er '.projects.nodes[0].id' || die "no project named $1"
+  project_find "$1" id | jq -r .id
 }
 
 need_file() {
@@ -814,12 +828,10 @@ linear_relate() {
 }
 
 # The project with its issues, each with the issues that block it.
-project_get() { # project_get <name>
-  gql 'query($name: String!) { projects(first: 1, filter: {name: {eq: $name}}) { nodes {
-      name description content url state
+project_get() { # project_get <name or code>
+  project_find "$1" 'name description content url state
       issues(first: 100) { nodes { identifier title state { name }
-        inverseRelations(first: 20) { nodes { type issue { identifier } } } } } } } }' --arg name "$1" |
-    jq -e '.projects.nodes[0]' || die "no project named $1"
+        inverseRelations(first: 20) { nodes { type issue { identifier } } } } }'
 }
 
 # A project's description is capped at 255 characters by Linear, so the long

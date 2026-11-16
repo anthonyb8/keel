@@ -22,9 +22,13 @@ PROJECT_ISSUES = {
              ("ANB-12", [("blocks", "ANB-40")]), ("ANB-9", [("duplicate", "ANB-12")])],
     "loop": [("ANB-1", [("blocks", "ANB-2")]), ("ANB-2", [("blocks", "ANB-1")])],
     "teams": [("OTH-5", []), ("ANB-5", [])],
+    "P-ANB-7": [],
 }
 
 
+# Each project code Linear knows, and the project it names; P-ANB-7 is also
+# another project's name, which wins.
+PROJECT_CODES = {"P-ANB-12": "keel", "P-ANB-7": "keel"}
 # keel issue begin's issues: each one's state and the issues blocking it, each
 # blocker as (identifier, state name, state type, project).
 BEGIN_ISSUES = {
@@ -60,14 +64,20 @@ def answer(query, variables):
     if "projectCreate" in query or "projectUpdate" in query:
         op = "projectCreate" if "projectCreate" in query else "projectUpdate"
         return {op: {"project": {"name": variables.get("name", "keel"), "url": "https://linear.test/project/keel"}}}
-    if "projects(" in query:
-        if variables["name"] not in PROJECT_ISSUES:
+    if "projects(" in query or "project(id" in query:
+        # A project by name, or by its code, which only keel's is given here;
+        # Linear answers an unknown code with an error, as for an unknown issue.
+        name = variables["name"] if "projects(" in query else PROJECT_CODES.get(variables["id"])
+        if name is None:
+            return None
+        if name not in PROJECT_ISSUES:
             return {"projects": {"nodes": []}}
         issues = [{"identifier": i, "title": "t" + i, "state": {"name": "Todo"},
                    "inverseRelations": {"nodes": [{"type": t, "issue": {"identifier": b}} for t, b in by]}}
-                  for i, by in PROJECT_ISSUES[variables["name"]]]
-        return {"projects": {"nodes": [{"id": "project-" + variables["name"], "name": variables["name"], "description": "s",
-                                        "content": "c", "url": "u", "state": "started", "issues": {"nodes": issues}}]}}
+                  for i, by in PROJECT_ISSUES[name]]
+        project = {"id": "project-" + name, "name": name, "description": "s",
+                   "content": "c", "url": "u", "state": "started", "issues": {"nodes": issues}}
+        return {"projects": {"nodes": [project]}} if "projects(" in query else {"project": project}
     if "issues(" in query:
         return {"issues": {"nodes": [{"identifier": "ANB-31", "title": "keel skeleton", "url": "u", "state": {"name": "Todo"}}]}}
     if "teams(" in query:

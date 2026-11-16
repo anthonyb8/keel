@@ -588,6 +588,11 @@ eq "with each issue's state and title" "$(printf 'ANB-9\tTodo\ttANB-9')" "$(lin 
 eq "and the same number in two teams by team key" "ANB-5 OTH-5" "$(lin "$ACME" project order teams | cut -f1 | paste -sd' ')"
 err=$(lin "$ACME" project order nope 2>&1 >/dev/null)
 eq "project order on a project Linear lacks says only that" "keel: no project named nope" "$err"
+eq "project order takes the project's code too, printing the same lines" "$(lin "$ACME" project order keel)" "$(lin "$ACME" project order P-ANB-12)"
+eq "a code Linear does not know fails in one line naming it" "keel: no project named or coded P-ANB-999" "$(lin "$ACME" project get P-ANB-999 2>&1 >/dev/null)"
+lin "$ACME" project update P-ANB-12 --body "$T/body.md" >/dev/null
+eq "and project update finds the project by its code" "project-keel" "$(last | jq -r .variables.id)"
+eq "a project named like another's code is found by its name" "P-ANB-7" "$(lin "$ACME" project get P-ANB-7 | jq -r .name)"
 err=$(lin "$ACME" project order loop 2>&1 >/dev/null)
 refute "project order fails on issues that block each other" lin "$ACME" project order loop
 check "naming them" grep -q "these issues block each other: ANB-1 ANB-2" <<<"$err"
