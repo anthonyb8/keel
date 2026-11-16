@@ -16,11 +16,12 @@ PORT_FILE, LOG, KEY = sys.argv[1], sys.argv[2], sys.argv[3]
 # Each project's issues, in the order Linear lists them, with what relates to
 # each: keel's ANB-12 is blocked by ANB-40, outside the project, and ANB-9 is
 # only a duplicate of ANB-12, which orders nothing; loop's two issues block
-# each other.
+# each other; teams spans two teams with the same number.
 PROJECT_ISSUES = {
     "keel": [("ANB-10", [("blocks", "ANB-12")]), ("ANB-11", [("blocks", "ANB-10")]),
              ("ANB-12", [("blocks", "ANB-40")]), ("ANB-9", [("duplicate", "ANB-12")])],
     "loop": [("ANB-1", [("blocks", "ANB-2")]), ("ANB-2", [("blocks", "ANB-1")])],
+    "teams": [("OTH-5", []), ("ANB-5", [])],
 }
 
 

@@ -772,8 +772,8 @@ linear_project() {
   get) project_get "$name" ;;
   order)
     # Build order: an issue comes after every issue in the project that blocks
-    # it, and among those ready, the lowest number goes first, so the same
-    # project always gives the same order. A blocker outside the project is
+    # it, and among those ready, the lowest number goes first, then the team
+    # key, so the same project always gives the same order. A blocker outside the project is
     # the issue's own playbook's to ask about.
     project_get "$name" | jq -r '
       .issues.nodes | map({id: .identifier, title, state: .state.name,
@@ -783,7 +783,7 @@ linear_project() {
       | until(.left == [];
           (.placed | map(.id)) as $done
           | ([.left[] | select(all(.by[]; . as $b | ($ids | index($b)) == null or ($done | index($b)) != null))]
-             | sort_by(.id | capture("(?<n>[0-9]+)$").n | tonumber)) as $ready
+             | sort_by(.id | capture("^(?<team>.*)-(?<n>[0-9]+)$") | [(.n | tonumber), .team])) as $ready
           | if $ready == [] then error("these issues block each other: \(.left | map(.id) | join(" "))")
             else .placed += [$ready[0]] | .left -= [$ready[0]] end)
       | .placed[] | "\(.id)\t\(.state)\t\(.title)"' || die "could not order the issues of $name"

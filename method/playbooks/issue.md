@@ -19,7 +19,7 @@ When the conversation already holds a step's output for this issue, start after 
 11. Move it to In Progress once, after the first real run and only from Backlog or Todo: `keel linear update <ID> --state "In Progress"`.
 12. Stop before shipping, with everything uncommitted; shipping is `/ship`, on the user's ask **(stop)**.
 
-Inside a project build, run by the `project` playbook, step 3 is already done in the project's tree, step 4 is already done when the issue's comments hold its answered audit decisions, and step 12 runs `/ship commit` instead of stopping, or `/ship pr` for the project's last issue.
+Inside a project build, run by the `project` playbook, step 2 counts an open blocker from the same project as cleared once a commit on this branch has a headline starting with its ID, step 3 is already done in the project's tree, step 4 is already done when the issue's comments hold its answered audit decisions, and step 12 runs `/ship commit` instead of stopping, or `/ship pr` for the project's last issue, with a PR titled for the project whose body names every issue the branch built.
 
 Under a contract that grants them, go on instead of stopping before `/ship`: `/verify` until it passes, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does.
 

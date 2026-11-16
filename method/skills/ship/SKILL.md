@@ -57,6 +57,7 @@ Never force-push, never push to a protected branch.
 
 - If `gh pr view` finds one for this branch already, stop at the push and give its URL: editing a PR's title or body is a separate ask.
 - Fill the project's PR template as VOICE.md describes, adding nothing to it, and write it to a file under the job's temp directory.
+- In a project build, the title names the project and the body names every issue the branch built, each with its commit.
 - `gh pr create --base <base> --head <branch> --title "<headline>" --body-file <file>`.
 - Never merge, approve or retarget it, and leave labels and reviewers alone.
 

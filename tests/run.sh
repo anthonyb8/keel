@@ -585,6 +585,7 @@ eq "project get prints the project" "keel" "$(lin "$ACME" project get keel | jq 
 eq "project order lists blockers first, then the lowest number, ignoring other relations and a blocker outside it" \
   "ANB-9 ANB-12 ANB-10 ANB-11" "$(lin "$ACME" project order keel | cut -f1 | paste -sd' ')"
 eq "with each issue's state and title" "$(printf 'ANB-9\tTodo\ttANB-9')" "$(lin "$ACME" project order keel | head -1)"
+eq "and the same number in two teams by team key" "ANB-5 OTH-5" "$(lin "$ACME" project order teams | cut -f1 | paste -sd' ')"
 err=$(lin "$ACME" project order loop 2>&1 >/dev/null)
 refute "project order fails on issues that block each other" lin "$ACME" project order loop
 check "naming them" grep -q "these issues block each other: ANB-1 ANB-2" <<<"$err"
