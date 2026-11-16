@@ -1002,6 +1002,16 @@ handback keel-verifier "Looked at it, seems fine."
 eq "and a handback with no VERDICT line records fail" "fail" "$(vd | head -1)"
 handback keel-agent $'VERDICT: pass'
 eq "only a keel-verifier's handback is recorded" "fail" "$(vd | head -1)"
+category() { jq -sr --arg p "$GR" '[.[] | select(.path == $p)] | last | .category' "$VH"; }
+verifier_says $'VERDICT: fail\nCATEGORY: behaviour\nthe parser drops the last row'
+eq "a fail records the category its verifier named in the history, not in the findings" "behaviour|the parser drops the last row" \
+  "$(category)|$(cd "$GR" && "$K" verdict --json | jq -r .findings)"
+verifier_says $'VERDICT: fail\nCATEGORY: vibes\nit felt off'
+eq "a category it does not know records unknown" "unknown" "$(category)"
+verifier_says $'VERDICT: fail\nthe parser drops the last row'
+eq "and so does a fail that names none" "unknown" "$(category)"
+verifier_says $'VERDICT: pass\nCATEGORY: lint'
+eq "a pass records no category, and is still a pass" "null pass" "$(category) $(vd | head -1)"
 verifier_says $'VERDICT: pass'
 verifier_says ""
 eq "a verifier that ends with no text and hands nothing back records fail" "fail" "$(vd | head -1)"
@@ -1233,7 +1243,12 @@ eq "a run's steps carry their attempts, attempt time and skip codes" '[2,145,1,{
   "$(jq -c '.playbooks[0].steps | [.[0].attempts, .[0].attempt_s, .[0].rerun_runs, .[1].skip_codes]' <<<"$out")"
 eq "scripts are counted from events.jsonl, with what they handed back" '[2,{"0":1,"2":1},[["a check is still pending",1]]]' \
   "$(jq -c '.scripts[0] | [.calls, .exits, .handed_back]' <<<"$out")"
-eq "and the verifier's first-pass rate from the decision logs" '{"first_pass":0,"rounds_to_pass":{"2":1},"verified_runs":1}' "$(jq -cS .verifier <<<"$out")"
+# verdicts.jsonl holds a behaviour fail in the run, recorded the day after the
+# run started, one recorded before fails had a category, and a lint fail outside
+# any run that day.
+eq "and the verifier's first-pass rate from the decision logs, with fails by category from the history" \
+  '{"fail_categories":{"behaviour":1,"lint":1},"first_pass":0,"rounds_to_pass":{"2":1},"verified_runs":1}' "$(jq -cS .verifier <<<"$out")"
+eq "a fail in a run is dated by the run's start, as the run is" '{"lint":1}' "$(ks --json --since 2026-11-11 | jq -cS .verifier.fail_categories)"
 eq "a line it cannot parse is counted, and the rest of the file still counts" '{"lines":31,"share":0.0323,"unread":1}' "$(jq -cS .unread <<<"$out")"
 eq "a run start the user denied counts no run; only the one keel says started does" "1" "$(skill router '.runs')"
 check "no message text reaches the output" bash -c "! grep -q 'fix the cart' <<<'$out'"

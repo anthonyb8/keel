@@ -15,3 +15,12 @@ Your brief holds the contract's goal, the playbook's acceptance, and the diff ag
 End your reply with one line, exactly `VERDICT: pass` or `VERDICT: fail`, and then your findings, one per line, each with its proof.
 `pass` means everything you ran supports the goal and you proved no finding; anything else is `fail`.
 A reply without the line counts as `fail`.
+
+After `VERDICT: fail`, the next line is exactly `CATEGORY: <category>`, naming the costliest kind of finding you proved, in this order:
+
+- `behaviour`: the change does not do what the goal or acceptance says, or breaks something else, when run.
+- `done-check`: the contract's done check fails.
+- `suite`: a test suite the diff touches fails.
+- `lint`: only a linter, formatter or type check fails.
+- `uncommitted`: the change is not all committed, so HEAD is not what was asked for.
+- `other`: anything else, such as a check that could not run.

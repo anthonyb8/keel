@@ -846,7 +846,9 @@ def verdicts(state_dir: str, all_runs: list[tuple[dict[str, object], str]], sinc
     """Verdicts per day, and how many verified runs passed their first round.
 
     A run's verdicts come from its decisions.tsv; verdicts.jsonl adds those
-    outside runs, kept since it was introduced.
+    outside runs, kept since it was introduced. Fails are counted by category
+    from verdicts.jsonl alone, in runs and outside them, leaving out those
+    recorded before fails had one.
     """
     days: dict[str, Counts] = collections.defaultdict(dict)
     first_pass = verified = 0
@@ -868,13 +870,21 @@ def verdicts(state_dir: str, all_runs: list[tuple[dict[str, object], str]], sinc
             verified += 1
             first_pass += seq[0] == "pass"
             rounds[str(seq.index("pass") + 1 if "pass" in seq else len(seq))] += 1
+    categories: Counts = {}
     for row in read_json_lines(os.path.join(state_dir, "verdicts.jsonl")):
         day, verdict = day_of(row.get("at")), row.get("verdict")
-        if (row.get("run_started_at") is None and day and day >= since and verdict in ("pass", "fail")
-                and in_repo(text(row.get("path")) or "", repo)):
+        if not (day and verdict in ("pass", "fail") and in_repo(text(row.get("path")) or "", repo)):
+            continue
+        in_run = row.get("run_started_at") is not None
+        if not in_run and day >= since:
             add(days[day], {str(verdict): 1})
+        # A verdict in a run belongs to the day the run started, as the run does.
+        counted_day = day_of(row.get("run_started_at")) if in_run else day
+        if verdict == "fail" and (category := text(row.get("category"))) and (counted_day or "") >= since:
+            add(categories, {category: 1})
     quality = {"verified_runs": verified, "first_pass": first_pass,
-               "rounds_to_pass": dict(sorted(rounds.items(), key=lambda kv: int(kv[0])))}
+               "rounds_to_pass": dict(sorted(rounds.items(), key=lambda kv: int(kv[0]))),
+               "fail_categories": dict(sorted(categories.items(), key=lambda kv: (-kv[1], kv[0])))}
     return days, quality
 
 

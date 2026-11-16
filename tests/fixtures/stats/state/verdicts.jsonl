@@ -1,1 +1,4 @@
 {"at": "2026-11-11T09:00:00Z", "verdict": "pass", "tree": "ccc", "path": "/work/app", "run_started_at": null, "playbook": null, "step": null}
+{"at": "2026-11-10T10:06:00Z", "verdict": "fail", "tree": "bbb", "path": "/work/app", "run_started_at": "2026-11-10T10:00:05Z", "playbook": "bug-fix", "step": 5}
+{"at": "2026-11-11T00:30:00Z", "verdict": "fail", "category": "behaviour", "tree": "aaa", "path": "/work/app", "run_started_at": "2026-11-10T10:00:05Z", "playbook": "bug-fix", "step": 5}
+{"at": "2026-11-11T09:30:00Z", "verdict": "fail", "category": "lint", "tree": "ddd", "path": "/work/app", "run_started_at": null, "playbook": null, "step": null}

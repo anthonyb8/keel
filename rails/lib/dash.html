@@ -337,7 +337,8 @@ const tiles = [
   ["Agent time", fmtMin(agent), "working, idle gaps over 30 min left out"],
   ["Waiting on you", fmtMin(wait), "time before each reply you typed"],
   ["Tokens", fmtTok(tokens), Object.keys(models).length ? Object.entries(models).sort((a, b) => b[1] - a[1]).map(([m, n]) => modelName(m) + " " + pct(n, tokens)).join(", ") : "none"],
-  ["Verifier first pass", v.verified_runs ? pct(v.first_pass, v.verified_runs) : "-", v.first_pass + " of " + v.verified_runs + " verified runs passed round one"],
+  ["Verifier first pass", v.verified_runs ? pct(v.first_pass, v.verified_runs) : "-", v.first_pass + " of " + v.verified_runs + " verified runs passed round one"
+    + (Object.keys(v.fail_categories).length ? "; fails: " + Object.entries(v.fail_categories).map(([c, n]) => c + " " + n).join(", ") : "")],
   ["Skill runs", String(skillRuns), verify ? verify.runs + " of them /verify" : "the router not counted"],
 ];
 document.getElementById("tiles").append(...tiles.map(([k, val, s]) => el("div", {class: "tile"}, el("div", {class: "k"}, k), el("div", {class: "v mono"}, val), el("div", {class: "s"}, s))));

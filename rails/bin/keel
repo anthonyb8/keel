@@ -1402,14 +1402,21 @@ hook_handback() {
 # goes to $VERDICTS_DIR for every tree, where `keel verdict` reads it, and
 # into the run as well when an active run holds the tree.
 record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed it back>]
-  local tree dir verdict findings code at run
+  local tree dir verdict findings code at run category=null
   tree=$(tree_of "$1" 2>/dev/null) || return 0
   code=$(git -C "$tree" rev-parse 'HEAD^{tree}' 2>/dev/null) || return 0
   verdict=$(grep -oE '^VERDICT: (pass|fail)[[:space:]]*$' <<<"$2" | tail -1 | cut -d' ' -f2 | tr -d '[:space:]' || true)
-  findings=$(sed -n '/^VERDICT: /,$p' <<<"$2" | tail -n +2 | head -c 4000)
+  findings=$(sed -n '/^VERDICT: /,$p' <<<"$2" | tail -n +2 | grep -v '^CATEGORY: ' | head -c 4000 || true)
   if [[ -z "$verdict" ]]; then
     verdict=fail
     findings="the verifier ended without a VERDICT line"
+  fi
+  # Why a fail failed, for keel stats to count; a missing or unknown category
+  # records unknown and never changes the verdict.
+  if [[ "$verdict" == fail ]]; then
+    category=$(grep -oE '^CATEGORY: (behaviour|done-check|suite|lint|uncommitted|other)[[:space:]]*$' <<<"$2" |
+      tail -1 | cut -d' ' -f2 | tr -d '[:space:]' || true)
+    category=$(jq -cn --arg c "${category:-unknown}" '$c')
   fi
   at=$(now)
   mkdir -p "$VERDICTS_DIR"
@@ -1421,8 +1428,8 @@ record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed
   run='{}'
   [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] &&
     run=$(jq -c '{run_started_at: .started_at, playbook, step: .current}' "$dir/status.json")
-  jq -cn --arg v "$verdict" --arg t "$code" --arg p "$tree" --arg now "$at" --argjson run "$run" \
-    '{at: $now, verdict: $v, tree: $t, path: $p, run_started_at: null, playbook: null, step: null} + $run' >>"$STATE_DIR/verdicts.jsonl"
+  jq -cn --arg v "$verdict" --argjson c "$category" --arg t "$code" --arg p "$tree" --arg now "$at" --argjson run "$run" \
+    '{at: $now, verdict: $v, category: $c, tree: $t, path: $p, run_started_at: null, playbook: null, step: null} + $run' >>"$STATE_DIR/verdicts.jsonl"
   [[ "$run" != '{}' ]] || return 0
   run_update "$dir" '.verifier = {verdict: $v, tree: $t, at: $now, findings: $f}' \
     --arg v "$verdict" --arg t "$code" --arg f "$findings"
