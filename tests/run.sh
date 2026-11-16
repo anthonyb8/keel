@@ -1241,6 +1241,106 @@ eq "a line it cannot write leaves keel merge's exit and output as they were" "2 
 rmdir "$EV" && mv "$T/events.saved" "$EV"
 rm -f "$T/stubs/gh"
 
+section "ship"
+# keel ship against a clone of acme's remote and a gh stub that lists the PRs
+# in $T/ship-prs.json and logs each pr create.
+SR="$T/work/acme/ship"
+git clone -q "$T/remotes/acme/app" "$SR"
+cat >"$T/stubs/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+"pr list") cat "$T/ship-prs.json" ;;
+"pr create") printf '%s\n' "$*" >>"$T/ship-creates"; echo "https://github.test/acme/app/pull/7" ;;
+*) echo "gh stub: unexpected $*" >&2; exit 9 ;;
+esac
+STUB
+chmod +x "$T/stubs/gh"
+echo '[]' >"$T/ship-prs.json"
+ks_() { (cd "$SR" && "$K" ship "$@"; echo "exit $?"); }
+shipped() { sed '$d' <<<"$1" | jq -r "$2"; }
+printf 'Add a\n\nWhy a.\n' >"$T/ship-msg"
+echo a >"$SR/a.txt" && echo b >"$SR/b.txt"
+git -C "$SR" switch -q develop
+ship_head=$(git -C "$SR" rev-parse HEAD)
+res=$(ks_ commit --files a.txt --message "$T/ship-msg")
+eq "on a protected branch it exits 2 and changes nothing" "exit 2|develop is protected: nothing ships from it|$ship_head|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" rev-parse HEAD)|$(git -C "$SR" diff --cached --name-only)"
+git -C "$SR" switch -q -c feature/ship
+res=$(ks_ commit --files a.txt --message "$T/ship-msg")
+eq "commit commits exactly the named files with the message" "exit 0|committed|a.txt|Add a|?? b.txt" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(git -C "$SR" show --name-only --format= HEAD)|$(git -C "$SR" log -1 --format=%s)|$(git -C "$SR" status --short)"
+echo a2 >"$SR/a.txt" && git -C "$SR" add b.txt
+res=$(ks_ commit --files a.txt --message "$T/ship-msg")
+eq "a file staged outside --files stops it before anything is committed" "exit 2|files outside --files are already staged: b.txt|Add a|A  b.txt" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" log -1 --format=%s)|$(git -C "$SR" status --short | grep b.txt)"
+git -C "$SR" restore --staged b.txt
+printf 'Add a2\n\nWhy.\n\nCo-authored-by: Someone <s@example.com>\n' >"$T/ship-coauthor"
+res=$(ks_ commit --files a.txt --message "$T/ship-coauthor")
+eq "a message with a co-author line exits 2, committing nothing" \
+  "exit 2|the message has a co-author line, which the git rules forbid|Add a" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" log -1 --format=%s)"
+res=$(ks_ push --files a.txt --message "$T/ship-msg")
+eq "push commits, then exits 2 without a passing verdict, pushing nothing" \
+  "exit 2|no passing verdict for this code: run /verify, then keel ship push again|true|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(shipped "$res" '.committed != null')|$(git -C "$SR" ls-remote origin feature/ship)"
+res=$(ks_ push --skip-verify "docs only")
+eq "--skip-verify pushes and names the skip" "exit 0|pushed|skipped: docs only|$(git -C "$SR" rev-parse HEAD)" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .verify)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
+res=$(ks_ push --skip-verify again)
+eq "with nothing new, push exits 2" "exit 2|nothing to push: origin/feature/ship is already at HEAD" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)"
+echo c >"$SR/c.txt"
+printf 'Add c\n\nWhy c.\n' >"$T/ship-msg-c"
+ks_ commit --files c.txt --message "$T/ship-msg-c" >/dev/null
+jq -n --arg c "$SR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"s1",agent_type:"keel-verifier",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
+printf 'The body.\n' >"$T/ship-body"
+res=$(ks_ pr --title "Ship things" --body "$T/ship-body")
+eq "pr, with a pass for this code, pushes and opens the PR into the base" \
+  "exit 0|opened|pass|https://github.test/acme/app/pull/7|$(git -C "$SR" rev-parse HEAD)|pr create --base develop --title Ship things --body-file $T/ship-body" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .verify)|$(shipped "$res" .pr)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)|$(cat "$T/ship-creates")"
+echo '[{"number":7,"state":"OPEN","url":"https://github.test/acme/app/pull/7","baseRefName":"develop"}]' >"$T/ship-prs.json"
+echo c2 >"$SR/c.txt"
+res=$(ks_ pr --files c.txt --message "$T/ship-msg-c" --skip-verify "trial")
+eq "with a PR already open it pushes, prints its URL and opens no other" \
+  "exit 0|pushed|https://github.test/acme/app/pull/7|1|$(git -C "$SR" rev-parse HEAD)" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .pr)|$(wc -l <"$T/ship-creates")|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
+(cd "$SR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract false)" >/dev/null)
+eq "in a contracted run --skip-verify exits 2" "a contracted run cannot skip verifying" "$(ks_ push --skip-verify x | sed '$d' | jq -r .reason)"
+echo d >"$SR/d.txt"
+printf 'Add d\n\nWhy d.\n' >"$T/ship-msg-d"
+eq "the run's grants let a commit through" "committed" "$(ks_ commit --files d.txt --message "$T/ship-msg-d" | sed '$d' | jq -r .result)"
+jq -n --arg c "$SR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"s2",agent_type:"keel-verifier",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
+check "but git-guard refuses what they leave out, here a push" \
+  grep -q '^git-guard refused `git push -u origin HEAD:feature/ship`: .*grant' <<<"$(ks_ push | sed '$d' | jq -r .reason)"
+eq "it logs each call by its verb" '["ship push",2]' "$(tail -1 "$HOME/.local/state/keel/events.jsonl" | jq -c '[.cmd, .exit]')"
+(cd "$SR" && "$K" run stop stopped >/dev/null)
+# A run granting a draft PR: the PR opens as a draft, with no --head, which git-guard refuses in a run.
+echo '[]' >"$T/ship-prs.json"
+printf 'goal: g\ndone: false\ngrants: commit, push, draft-pr\n\nNotes.\n' >"$T/ship-pr-contract.md"
+(cd "$SR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$T/ship-pr-contract.md" >/dev/null)
+jq -n --arg c "$SR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"s3",agent_type:"keel-verifier",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
+res=$(ks_ pr --title "Ship things" --body "$T/ship-body")
+eq "in a run granting it, pr opens a draft PR that git-guard lets through" \
+  "exit 0|opened|pr create --draft --base develop --title Ship things --body-file $T/ship-body" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(tail -1 "$T/ship-creates")"
+(cd "$SR" && "$K" run stop stopped >/dev/null)
+printf 'goal: g\ndone: false\ngrants: none\n\nNotes.\n' >"$T/ship-none-contract.md"
+(cd "$SR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$T/ship-none-contract.md" >/dev/null)
+echo e >"$SR/e.txt"
+res=$(ks_ commit --files e.txt --message "$T/ship-msg")
+eq "a commit git-guard refuses exits 2 and leaves nothing staged" "exit 2|true|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" '.reason | startswith("git-guard refused `git commit")')|$(git -C "$SR" diff --cached --name-only)"
+(cd "$SR" && "$K" run stop stopped >/dev/null)
+mkdir -p "$SR/sub" && echo f >"$SR/sub/f.txt" && printf 'Add f from sub\n\nWhy f.\n' >"$SR/sub/msg"
+res=$(cd "$SR/sub" && "$K" ship commit --files f.txt ../e.txt --message msg; echo "exit $?")
+eq "from a subdirectory, paths and the message are read from there" "exit 0|Add f from sub|e.txt sub/f.txt" \
+  "$(tail -1 <<<"$res")|$(git -C "$SR" log -1 --format=%s)|$(git -C "$SR" show --name-only --format= HEAD | sort | paste -sd' ')"
+mkdir -p "$SR/dir" && echo g >"$SR/dir/g.txt"
+res=$(ks_ commit --files dir --message "$T/ship-msg")
+eq "a directory in --files exits 2, staging nothing" "exit 2|--files names a directory, dir: name each file this work touched|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" diff --cached --name-only)"
+rm -f "$T/stubs/gh"
+
 section "stats"
 # A fixture whose numbers were counted by hand: a run start the user denied,
 # then one bug-fix run that enters

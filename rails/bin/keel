@@ -44,6 +44,10 @@
 #   keel verdict [--json]     the last keel-verifier's verdict for this tree; passes only on a pass at HEAD
 #   keel verify-brief         what a verifier starts from: base, commits, diff stat, and the done
 #                             check's and the pack's checks' results, cached by the code they ran on
+#   keel ship commit --files <path>... --message <file>
+#   keel ship push|pr [--files <path>... --message <file>] [--skip-verify <reason>] [--title <text> --body <file>]
+#                             /ship's fixed steps: commit the named files, then the verdict gate,
+#                             the push and the PR, each through git-guard; else exit 2 and why
 #   keel merge <squash|commit> [n]
 #                             merge PR n, else the current branch's, with that method once it is
 #                             ready and GitHub allows it; else exit 2 and why
@@ -1580,6 +1584,144 @@ brief_check() { # brief_check <label> <command> <tree> <code> <dirty>
   [[ -z "$out" ]] || sed 's/^/  /' <<<"$out"
 }
 
+# keel ship does /ship's fixed steps, so the agent writes only the message and
+# the PR body: commit exactly the named files, then for push and pr the verdict
+# gate, the push and the PR. Each git and gh command goes through git-guard
+# first, so it is held to the same rules as the agent's own commands, and a
+# state it cannot settle exits 2 with why, as keel merge does.
+SHIP_FACTS='{}'
+
+ship_fact() { # ship_fact <key> <json>
+  SHIP_FACTS=$(jq -c --arg k "$1" --argjson v "$2" '.[$k] = $v' <<<"$SHIP_FACTS")
+}
+
+ship_ask() { # ship_ask <reason>: hands the ship to the agent
+  EVENT_REASON="$1"
+  jq -n --arg r "$1" --argjson f "$SHIP_FACTS" '{result: "ask", reason: $r} + $f'
+  exit 2
+}
+
+ship_guard() { # ship_guard <tree> <command...>: asks git-guard about the command keel ship is about to run
+  local out why
+  out=$(jq -n --arg c "$(printf '%q ' "${@:2}")" --arg d "$1" \
+    '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}, cwd: $d}' | hook_git_guard) ||
+    die "git-guard failed on: ${*:2}"
+  why=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out") || die "git-guard gave output it cannot read on: ${*:2}"
+  [[ -z "$why" ]] || ship_ask "git-guard refused \`${*:2}\`: $why"
+}
+
+ship_cmd() { # ship <commit|push|pr> [--files <path>...] [--message <file>] [--title <text>] [--body <file>] [--skip-verify <reason>]
+  local usage="usage: keel ship commit --files <path>... --message <file> | push [--files <path>... --message <file>] [--skip-verify <reason>] | pr [same as push] --title <text> --body <file>"
+  local verb="${1:-}" message="" title="" body="" skip="" tree branch dir contracted=false sha out staged extra base prs open url f
+  local -a files=() draft=()
+  event_start "ship${1:+ $1}" "$@"
+  case "$verb" in commit | push | pr) shift ;; *) die "$usage" ;; esac
+  while (($#)); do
+    case "$1" in
+    --files)
+      shift
+      while (($#)) && [[ "$1" != --* ]]; do files+=("$1") && shift; done
+      ;;
+    --message | --title | --body | --skip-verify)
+      (($# >= 2)) || die "$usage"
+      case "$1" in --message) message="$2" ;; --title) title="$2" ;; --body) body="$2" ;; --skip-verify) skip="$2" ;; esac
+      shift 2
+      ;;
+    *) die "$usage" ;;
+    esac
+  done
+  [[ "$verb" == pr || -z "$title$body" ]] || die "$usage"
+  [[ "$verb" != commit || -z "$skip" ]] || die "$usage"
+  [[ ${#files[@]} -eq 0 || -n "$message" ]] || die "--files needs --message <file>"
+  [[ -z "$message" || ${#files[@]} -gt 0 ]] || die "--message needs --files"
+  [[ "$verb" != commit || ${#files[@]} -gt 0 ]] || die "$usage"
+  # git commit and gh run from the tree's top, so a path given from a subdirectory is made absolute first.
+  [[ -z "$message" || "$message" == /* ]] || message="$PWD/$message"
+  [[ -z "$body" || "$body" == /* ]] || body="$PWD/$body"
+  [[ -z "$message" || -f "$message" ]] || die "no such message file: $message"
+  tree=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repository"
+  branch=$(git -C "$tree" branch --show-current)
+  ship_fact branch "$(jq -cn --arg b "$branch" '$b')"
+  [[ -n "$branch" ]] || ship_ask "HEAD is detached: ship from a branch"
+  if protected_for "$tree" | grep -qxF "$branch"; then ship_ask "$branch is protected: nothing ships from it"; fi
+  dir=$(run_dir "$tree")
+  if run_holding "$tree" >/dev/null && [[ -f "$dir/contract.md" ]]; then contracted=true; fi
+  [[ "$contracted" == false || -z "$skip" ]] || ship_ask "a contracted run cannot skip verifying"
+  [[ "$verb" == commit ]] || git -C "$tree" remote get-url origin >/dev/null 2>&1 || ship_ask "the repository has no origin to push to"
+
+  # Commit exactly the named files, and nothing staged beside them.
+  if ((${#files[@]})); then
+    if grep -qi '^co-authored-by:' "$message"; then ship_ask "the message has a co-author line, which the git rules forbid"; fi
+    # Files, never a directory, which would stage whatever lies under it.
+    for f in "${files[@]}"; do
+      [[ ! -d "$f" ]] || ship_ask "--files names a directory, $f: name each file this work touched"
+    done
+    # Anything already staged that --files does not cover would go into the commit.
+    extra=$(git diff --cached --name-only | grep -vxF -f <(git diff --cached --name-only -- "${files[@]}" 2>/dev/null) || true)
+    [[ -z "$extra" ]] || ship_ask "files outside --files are already staged: $(paste -sd' ' <<<"$extra")"
+    # Asked before staging, so a refusal leaves the index as it was.
+    ship_guard "$tree" git commit -F "$message"
+    git add -- "${files[@]}" || die "git add refused: ${files[*]}"
+    staged=$(git diff --cached --name-only)
+    if [[ -n "$staged" ]]; then
+      git -C "$tree" commit -q -F "$message" || die "git commit failed"
+      ship_fact committed "$(git -C "$tree" rev-parse HEAD | jq -R .)"
+    elif [[ "$verb" == commit ]]; then
+      ship_ask "nothing to commit in $(paste -sd' ' < <(printf '%s\n' "${files[@]}"))"
+    fi
+  fi
+  sha=$(git -C "$tree" rev-parse HEAD)
+  ship_fact head "$(jq -R . <<<"$sha")"
+  if [[ "$verb" == commit ]]; then
+    jq -n --argjson f "$SHIP_FACTS" '{result: "committed"} + $f'
+    return 0
+  fi
+
+  # The verdict gate: a pass for this code, unless the user skipped it.
+  if [[ -n "$skip" ]]; then
+    ship_fact verify "$(jq -cn --arg r "$skip" '"skipped: \($r)"')"
+  elif ! out=$(cd "$tree" && verdict 2>&1); then
+    ship_fact verdict "$(jq -R . <<<"$out")"
+    ship_ask "no passing verdict for this code: run /verify, then keel ship $verb again"
+  else
+    ship_fact verify '"pass"'
+  fi
+  if git -C "$tree" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null &&
+    [[ "$(git -C "$tree" rev-list --count "origin/$branch..HEAD")" == 0 && "$verb" == push ]]; then
+    ship_ask "nothing to push: origin/$branch is already at HEAD"
+  fi
+  ship_guard "$tree" git push -u origin "HEAD:$branch"
+  out=$(git -C "$tree" push -q -u origin "HEAD:$branch" 2>&1) || die "git push failed: $out"
+  if [[ "$verb" == push ]]; then
+    jq -n --argjson f "$SHIP_FACTS" '{result: "pushed"} + $f'
+    return 0
+  fi
+
+  # The PR into the base: one already open is left as it is.
+  base=$(base_for "$tree")
+  if [[ -z "$base" ]]; then
+    base=$(git -C "$tree" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || ship_ask "neither the pack nor origin names a base for the PR"
+    base=${base#origin/}
+  fi
+  ship_fact base "$(jq -R . <<<"$base")"
+  prs=$(cd "$tree" && gh pr list --head "$branch" --state all --json number,state,url,baseRefName) || die "gh could not list PRs from $branch"
+  ship_fact prs "$prs"
+  open=$(jq -r --arg b "$base" '[.[] | select(.state == "OPEN" and .baseRefName == $b)][0].url // empty' <<<"$prs")
+  if [[ -n "$open" ]]; then
+    jq -n --argjson f "$SHIP_FACTS" --arg u "$open" '{result: "pushed", pr: $u} + $f'
+    return 0
+  fi
+  [[ "$prs" == "[]" ]] || ship_ask "$branch already has a closed, merged or differently based PR"
+  [[ -n "$title" && -n "$body" ]] || die "$usage"
+  [[ -f "$body" ]] || die "no such body file: $body"
+  [[ "$contracted" == false ]] || draft=(--draft)
+  # No --head: the push above set the branch's upstream, and git-guard refuses --head in a run.
+  ship_guard "$tree" gh pr create "${draft[@]}" --base "$base" --title "$title" --body-file "$body"
+  url=$(cd "$tree" && gh pr create "${draft[@]}" --base "$base" --title "$title" --body-file "$body" 2>&1) ||
+    die "gh could not open the PR: $url"
+  jq -n --argjson f "$SHIP_FACTS" --arg u "$(tail -1 <<<"$url")" '{result: "opened", pr: $u} + $f'
+}
+
 merge_fact() { # merge_fact <key> <json>
   MERGE_FACTS=$(jq -c --arg k "$1" --argjson v "$2" '.[$k] = $v' <<<"$MERGE_FACTS")
 }
@@ -1814,6 +1956,7 @@ verify-brief)
   verify_brief
   ;;
 merge) merge_pr "$@" ;;
+ship) ship_cmd "$@" ;;
 reflect) reflect "$@" ;;
 eval) exec "$KEEL_ROOT/learning/eval.sh" "$@" ;;
 linear) event_start "linear${1:+ $1}" "$@"; linear "$@" ;;
