@@ -13,6 +13,17 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT_FILE, LOG, KEY = sys.argv[1], sys.argv[2], sys.argv[3]
 
+# Each project's issues, in the order Linear lists them, with what relates to
+# each: keel's ANB-12 is blocked by ANB-40, outside the project, and ANB-9 is
+# only a duplicate of ANB-12, which orders nothing; loop's two issues block
+# each other; teams spans two teams with the same number.
+PROJECT_ISSUES = {
+    "keel": [("ANB-10", [("blocks", "ANB-12")]), ("ANB-11", [("blocks", "ANB-10")]),
+             ("ANB-12", [("blocks", "ANB-40")]), ("ANB-9", [("duplicate", "ANB-12")])],
+    "loop": [("ANB-1", [("blocks", "ANB-2")]), ("ANB-2", [("blocks", "ANB-1")])],
+    "teams": [("OTH-5", []), ("ANB-5", [])],
+}
+
 
 def answer(query, variables):
     if "issueCreate" in query:
@@ -26,16 +37,19 @@ def answer(query, variables):
     if "projectCreate" in query or "projectUpdate" in query:
         op = "projectCreate" if "projectCreate" in query else "projectUpdate"
         return {op: {"project": {"name": variables.get("name", "keel"), "url": "https://linear.test/project/keel"}}}
+    if "projects(" in query:
+        if variables["name"] not in PROJECT_ISSUES:
+            return {"projects": {"nodes": []}}
+        issues = [{"identifier": i, "title": "t" + i, "state": {"name": "Todo"},
+                   "inverseRelations": {"nodes": [{"type": t, "issue": {"identifier": b}} for t, b in by]}}
+                  for i, by in PROJECT_ISSUES[variables["name"]]]
+        return {"projects": {"nodes": [{"id": "project-" + variables["name"], "name": variables["name"], "description": "s",
+                                        "content": "c", "url": "u", "state": "started", "issues": {"nodes": issues}}]}}
     if "issues(" in query:
         return {"issues": {"nodes": [{"identifier": "ANB-31", "title": "keel skeleton", "url": "u", "state": {"name": "Todo"}}]}}
     if "teams(" in query:
         nodes = [{"id": "team-" + variables["key"]}] if variables["key"] in ("ANB", "OTH") else []
         return {"teams": {"nodes": nodes}, "organization": {"name": "Stub Org"}}
-    if "projects(" in query:
-        if variables["name"] != "keel":
-            return {"projects": {"nodes": []}}
-        return {"projects": {"nodes": [{"id": "project-keel", "name": "keel", "description": "s", "content": "c",
-                                        "url": "u", "state": "started", "issues": {"nodes": []}}]}}
     if "states" in query:
         return {"issue": {"team": {"states": {"nodes": [{"id": "state-todo", "name": "Todo"},
                                                         {"id": "state-canceled", "name": "Canceled"}]}}}}

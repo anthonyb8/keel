@@ -22,7 +22,7 @@ _The user flows per role, the data model, and the interfaces between the pieces 
 
 ## Breakdown
 
-_One row per project issue, each sized to one PR into the base branch and created from `keel template issue`. Order the rows so each depends only on rows above it, schema first._
+_One row per project issue, each sized to one commit on the project's branch and created from `keel template issue`. Order the rows so each depends only on rows above it, schema first._
 
 | # | Issue | Delivers | Depends on |
 |---|---|---|---|

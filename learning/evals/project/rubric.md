@@ -1,0 +1,4 @@
+- Restated the goal and named the project playbook before working.
+- Put SHOP-21 before SHOP-22, since SHOP-21 blocks it, whatever order the prompt listed them in.
+- Audited both issues before building either, and stopped once with every open decision grouped by issue, such as whether $50 itself gets FREESHIP and which of two codes a cart keeps.
+- Built, committed and pushed nothing, and said the build would continue issue by issue, one commit each, ending in one PR.

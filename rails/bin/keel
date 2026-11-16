@@ -24,7 +24,7 @@
 #                               update <ID> [--state <name>] [--body <file>]
 #                               comment <ID> --body <file>
 #                               relate <A> blocks <B>
-#                               project create|get|update <name> [--summary <s>] [--body <file>]
+#                               project create|get|order|update <name> [--summary <s>] [--body <file>]
 #   keel template [name] [dir]
 #                             print the issue or project template that applies in dir; no name lists them
 #   keel run start --playbook <name> --goal <text> --steps <file> [--replace]
@@ -741,17 +741,26 @@ linear_relate() {
   echo "$1 blocks $3"
 }
 
+# The project with its issues, each with the issues that block it.
+project_get() { # project_get <name>
+  gql 'query($name: String!) { projects(first: 1, filter: {name: {eq: $name}}) { nodes {
+      name description content url state
+      issues(first: 100) { nodes { identifier title state { name }
+        inverseRelations(first: 20) { nodes { type issue { identifier } } } } } } } }' --arg name "$1" |
+    jq -e '.projects.nodes[0]' || die "no project named $1"
+}
+
 # A project's description is capped at 255 characters by Linear, so the long
 # text goes in its content.
 linear_project() {
-  local team="$1" verb="${2:-}" name="${3:-}" summary="" body="" tid pid
-  [[ -n "$verb" && -n "$name" ]] || die "usage: keel linear project create|get|update <name> [--summary <s>] [--body <file>]"
+  local team="$1" verb="${2:-}" name="${3:-}" summary="" body="" tid pid project
+  [[ -n "$verb" && -n "$name" ]] || die "usage: keel linear project create|get|order|update <name> [--summary <s>] [--body <file>]"
   shift 3
   while (($#)); do
     case "$1" in
     --summary) summary="${2:-}" && shift 2 ;;
     --body) body="${2:-}" && shift 2 ;;
-    *) die "usage: keel linear project create|get|update <name> [--summary <s>] [--body <file>]" ;;
+    *) die "usage: keel linear project create|get|order|update <name> [--summary <s>] [--body <file>]" ;;
     esac
   done
   ((${#summary} <= 255)) || die "--summary is ${#summary} characters; Linear allows 255. Put the rest in --body"
@@ -760,11 +769,25 @@ linear_project() {
   [[ -n "$summary" ]] && args+=(--arg description "$summary")
   [[ -n "$body" ]] && args+=(--rawfile content "$body")
   case "$verb" in
-  get)
-    gql 'query($name: String!) { projects(filter: {name: {eq: $name}}) { nodes {
-        name description content url state
-        issues { nodes { identifier title state { name } } } } } }' --arg name "$name" |
-      jq -e '.projects.nodes[0]' || die "no project named $name"
+  get) project_get "$name" ;;
+  order)
+    # Build order: an issue comes after every issue in the project that blocks
+    # it, and among those ready, the lowest number goes first, then the team
+    # key, so the same project always gives the same order. A blocker outside the project is
+    # the issue's own playbook's to ask about.
+    project=$(project_get "$name") || exit 1
+    jq -r '
+      .issues.nodes | map({id: .identifier, title, state: .state.name,
+        by: [.inverseRelations.nodes[] | select(.type == "blocks") | .issue.identifier]}) as $all
+      | ($all | map(.id)) as $ids
+      | {placed: [], left: $all}
+      | until(.left == [];
+          (.placed | map(.id)) as $done
+          | ([.left[] | select(all(.by[]; . as $b | ($ids | index($b)) == null or ($done | index($b)) != null))]
+             | sort_by(.id | capture("^(?<team>.*)-(?<n>[0-9]+)$") | [(.n | tonumber), .team])) as $ready
+          | if $ready == [] then error("these issues block each other: \(.left | map(.id) | join(" "))")
+            else .placed += [$ready[0]] | .left -= [$ready[0]] end)
+      | .placed[] | "\(.id)\t\(.state)\t\(.title)"' <<<"$project" || die "could not order the issues of $name"
     ;;
   create)
     tid=$(team_id "$team") || exit 1

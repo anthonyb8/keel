@@ -31,7 +31,7 @@ Read `~/.keel/claude/VOICE.md` before writing the commit message or the PR body.
 ## 2. Commit
 
 - `git status`, then `git add` exactly the files this work touched, never `-A` or `.`.
-- One commit: a headline prefixed with the issue ID from the branch name where the project uses one, then a body of two or three sentences on why, in VOICE.md's style.
+- One commit: a headline prefixed with the issue ID from the branch name where the project uses one, or with the issue being built in a project build, then a body of two or three sentences on why, in VOICE.md's style.
 - No co-author or agent attribution line.
 - Never amend, squash or rewrite an existing commit.
 - With nothing to commit but commits not yet on `origin`, go on to verify.
@@ -57,6 +57,7 @@ Never force-push, never push to a protected branch.
 
 - If `gh pr view` finds one for this branch already, stop at the push and give its URL: editing a PR's title or body is a separate ask.
 - Fill the project's PR template as VOICE.md describes, adding nothing to it, and write it to a file under the job's temp directory.
+- In a project build, the title names the project and the body names every issue the branch built, each with its commit.
 - `gh pr create --base <base> --head <branch> --title "<headline>" --body-file <file>`.
 - Never merge, approve or retarget it, and leave labels and reviewers alone.
 

@@ -60,7 +60,7 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
   keel's stack state lives in the tree's git dir as `keel-stack`, apart from harness's.
 - **git-guard.** A `PreToolUse` hook refuses any merge, rebase, cherry-pick or revert that would move a protected branch: the pack's base, the default branch and the pack's `protected` list, as `keel protected` prints them.
   What it cannot place, such as a git call inside `bash -c`, it refuses rather than guesses.
-- **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`.
+- **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`, whose `order` lists a project's issues blockers first.
   The repository picks the workspace through `~/.config/keel/linear`, one line per origin glob: `*github.com[/:]anthonyb8/* ANB LINEAR_API_KEY_PERSONAL`, meaning the team key and the env var holding that workspace's key.
   A pack's `linear` file still names the team for the repositories it owns. The key is sent in a header file, never on a command line, and never printed.
 - **Merges.** `/merge squash` or `/merge commit`, with an optional PR number, runs `keel merge <squash|commit> [n]`: it merges the PR, else the current branch's, with that method once the PR is ready, GitHub allows the method, and no PR from the same head goes elsewhere.

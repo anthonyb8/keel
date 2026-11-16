@@ -17,7 +17,7 @@ Nothing is created until the user says yes to the draft.
 ## 2. Size it
 
 - Fits in one PR into the base: an **issue**.
-- Ships value on its own but needs more than one PR: a **Project**, with one issue per PR.
+- Ships value on its own but needs more than one PR: a **Project**, with one issue per commit, built in order on one branch by `/pickup` on the project.
 
 Say which, and why, in one line.
 
