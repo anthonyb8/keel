@@ -1352,9 +1352,14 @@ eq "a message with a co-author line exits 2, committing nothing" \
   "exit 2|the message has a co-author line, which the git rules forbid|Add a" \
   "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" log -1 --format=%s)"
 res=$(ks_ push --files a.txt --message "$T/ship-msg")
-eq "push commits, then exits 2 without a passing verdict, pushing nothing" \
-  "exit 2|no passing verdict for this code: run /verify, then keel ship push again|true|" \
-  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(shipped "$res" '.committed != null')|$(git -C "$SR" ls-remote origin feature/ship)"
+eq "push commits, then exits 2 without a passing verdict, naming what it committed and pushing nothing" \
+  "exit 2|committed $(git -C "$SR" rev-parse HEAD); no passing verdict for this code: run /verify, then keel ship push again|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" ls-remote origin feature/ship)"
+# A failed verdict for this code, which keel verdict reports over several lines.
+jq -n --arg c "$SR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"s0",agent_type:"keel-verifier",last_assistant_message:"VERDICT: fail\nthe total is wrong"}' | $K hook subagent-stop
+res=$(ks_ push)
+eq "after a failed verdict it exits 2 with the reason and the verdict's findings" "exit 2|no passing verdict for this code: run /verify, then keel ship push again|true" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(shipped "$res" '.verdict | contains("the total is wrong")')"
 res=$(ks_ push --skip-verify "docs only")
 eq "--skip-verify pushes and names the skip" "exit 0|pushed|skipped: docs only|$(git -C "$SR" rev-parse HEAD)" \
   "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .verify)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"

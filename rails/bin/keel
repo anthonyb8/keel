@@ -1639,7 +1639,7 @@ verify_brief() {
   fi
   if [[ -n "$dirty" ]]; then
     echo "uncommitted, so no check below is cached:"
-    sed 's/^/  /' <<<"$dirty"
+    echo "  ${dirty//$'\n'/$'\n'  }"
   else
     echo "uncommitted: none"
   fi
@@ -1683,7 +1683,7 @@ brief_check() { # brief_check <label> <command> <tree> <code> <dirty>
       jq -n --arg at "$(now)" --argjson exit "$code" --arg out "$out" '{at: $at, exit: $exit, out: $out}' | write_atomic "$file"
     fi
   fi
-  [[ -z "$out" ]] || sed 's/^/  /' <<<"$out"
+  [[ -z "$out" ]] || echo "  ${out//$'\n'/$'\n'  }"
 }
 
 # keel ship does /ship's fixed steps, so the agent writes only the message and
@@ -1783,8 +1783,8 @@ ship_cmd() { # ship <commit|push|pr> [--files <path>...] [--message <file>] [--t
   if [[ -n "$skip" ]]; then
     ship_fact verify "$(jq -cn --arg r "$skip" '"skipped: \($r)"')"
   elif ! out=$(cd "$tree" && verdict 2>&1); then
-    ship_fact verdict "$(jq -R . <<<"$out")"
-    ship_ask "no passing verdict for this code: run /verify, then keel ship $verb again"
+    ship_fact verdict "$(jq -Rs . <<<"$out")"
+    ship_ask "$(jq -r '.committed // empty | "committed \(.); "' <<<"$SHIP_FACTS")no passing verdict for this code: run /verify, then keel ship $verb again"
   else
     ship_fact verify '"pass"'
   fi
