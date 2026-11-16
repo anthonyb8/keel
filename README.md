@@ -55,6 +55,7 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
   A subagent's empty tree goes back to the pool when it stops; `keel sweep --apply` catches the rest, except trees listed in `~/.config/keel/keep`.
 - **Packs.** keel reads harness's packs from `~/.config/harness/packs` (or `$KEEL_PACKS`), read-only, until packs move into their repositories.
   A session in a repository a pack owns gets the pack's rules, with a note that where they name `harness <verb>`, the session runs `keel <verb>`.
+- **Verify brief.** `keel verify-brief` prints what a verifier starts from: the base, the commits and diff stat against it, and the contract's done check and each command in the pack's `checks` file, one per line, with its exit and output tail, cached by the code it ran on so a second round reruns nothing unchanged; a tree with uncommitted files is never cached, and a check that reads state outside the tree, such as `keel verdict`, does not belong in it.
 - **Stacks.** `keel stack up` starts the tree's stack through the pack's `stack` script and prints its URL once it serves; `keel stack down` stops it.
   `keel e2e` runs browser tests against it from a container on no network but the stack's ports.
   keel's stack state lives in the tree's git dir as `keel-stack`, apart from harness's.

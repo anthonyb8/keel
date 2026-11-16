@@ -1018,6 +1018,42 @@ eq "a verifier that ends with no text and hands nothing back records fail" "fail
 verifier_says $'VERDICT: passed with caveats'
 eq "a VERDICT line that is not exactly pass or fail records fail" "fail" "$(vd | head -1)"
 
+section "verify-brief"
+# A tree one commit ahead of the pack's base, with a pack check that counts its
+# own runs, and one that fails.
+create RB "$ACME" feature/brief
+echo brief >"$RB/brief.txt" && git -C "$RB" add brief.txt && git -C "$RB" commit -q -m "add the brief file"
+printf '# checks\necho ran >>%s; echo all good\n\nexit 3\n' "$T/brief-runs" >"$PACK/checks"
+vb() { (cd "$RB" && "$K" verify-brief); }
+out=$(vb)
+eq "it prints the base, the commits on top of it and their diff stat" \
+  "$(printf 'base: develop\ncommits (origin/develop..HEAD):\n  add the brief file\n  brief.txt')" \
+  "$(grep -E '^base:|^commits|add the brief file$|brief\.txt' <<<"$out" | sed -E 's/^  [0-9a-f]{7,} /  /; s/^ +(brief\.txt).*/  \1/')"
+eq "and each pack check's command, exit and output" "$(printf 'check: echo ran >>%s; echo all good\n  exit 0, ran now\n  all good\ncheck: exit 3\n  exit 3, ran now' "$T/brief-runs")" \
+  "$(sed -n '/^check: /,$p' <<<"$out")"
+eq "with no run, it says there is no done check" "done check: none" "$(grep '^done check' <<<"$out")"
+eq "and logs its call" '["verify-brief",0]' "$(tail -1 "$HOME/.local/state/keel/events.jsonl" | jq -c '[.cmd, .exit]')"
+out=$(vb)
+eq "a second call on the same code reuses each result and says so, running nothing" "2 1" \
+  "$(grep -c 'cached from .* on this code' <<<"$out") $(wc -l <"$T/brief-runs")"
+check "with the same output" grep -qx '  all good' <<<"$out"
+echo wip >"$RB/wip.txt"
+out=$(vb)
+check "uncommitted files are listed" grep -qx '  ?? wip.txt' <<<"$out"
+eq "and with them nothing is cached, since the code key does not cover them" "0 2" \
+  "$(grep -c 'cached from' <<<"$out") $(wc -l <"$T/brief-runs")"
+rm "$RB/wip.txt"
+echo more >>"$RB/brief.txt" && git -C "$RB" commit -q -am "change the brief file"
+out=$(vb)
+eq "a new commit is new code, so every check runs again" "0 3" \
+  "$(grep -c 'cached from' <<<"$out") $(wc -l <"$T/brief-runs")"
+rm "$PACK/checks"
+(cd "$RB" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract 'echo not yet; exit 4')" >/dev/null)
+eq "in a contracted run it runs the done check" "$(printf 'done check: echo not yet; exit 4\n  exit 4, ran now\n  not yet')" \
+  "$(vb | sed -n '/^done check: /,/^checks/p' | sed '$d')"
+(cd "$RB" && "$K" run stop stopped >/dev/null)
+refute "it takes no arguments" bash -c "cd '$RB' && '$K' verify-brief extra"
+
 section "merge"
 # keel merge against a gh stub that answers from files under $T/gh, each case
 # starting from a PR that is ready and a repository that allows both methods.

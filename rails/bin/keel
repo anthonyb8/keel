@@ -42,6 +42,8 @@
 #   keel dash [--since YYYY-MM-DD] [--repo name]
 #                             write keel stats as one page under ~/.local/state/keel and open it
 #   keel verdict [--json]     the last keel-verifier's verdict for this tree; passes only on a pass at HEAD
+#   keel verify-brief         what a verifier starts from: base, commits, diff stat, and the done
+#                             check's and the pack's checks' results, cached by the code they ran on
 #   keel merge <squash|commit> [n]
 #                             merge PR n, else the current branch's, with that method once it is
 #                             ready and GitHub allows it; else exit 2 and why
@@ -1499,6 +1501,85 @@ event_log() { # event_log <exit code>
   } 2>/dev/null || true
 }
 
+# A verifier opens by rebuilding the same facts every round, so verify-brief
+# gathers them once: facts and raw output only, never a judgement. A check's
+# result is cached by the code it ran on, HEAD^{tree}, and a dirty tree is
+# never cached, since that key does not cover uncommitted files.
+verify_brief() {
+  local tree code dirty base ref pack dir done_cmd cmd
+  local -a checks=()
+  tree=$(tree_of "$PWD")
+  code=$(git -C "$tree" rev-parse --verify --quiet 'HEAD^{tree}' 2>/dev/null) || die "$tree has no commit to verify"
+  dirty=$(git -C "$tree" status --porcelain)
+  base=$(base_for "$tree")
+  if [[ -z "$base" ]]; then
+    base=$(git -C "$tree" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || base=""
+    base=${base#origin/}
+  fi
+  ref=""
+  if [[ -n "$base" ]] && git -C "$tree" rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null; then
+    ref="origin/$base"
+  fi
+  echo "tree: $tree"
+  echo "HEAD: $(git -C "$tree" rev-parse --short=12 HEAD), code ${code:0:12}"
+  if [[ -n "$ref" ]]; then
+    echo "base: $base"
+    echo "commits ($ref..HEAD):"
+    git -C "$tree" log --oneline "$ref..HEAD" | sed 's/^/  /'
+    echo "diff stat ($ref...HEAD):"
+    git -C "$tree" diff --stat "$ref...HEAD" | sed 's/^/  /'
+  else
+    echo "base: unknown"
+  fi
+  if [[ -n "$dirty" ]]; then
+    echo "uncommitted, so no check below is cached:"
+    sed 's/^/  /' <<<"$dirty"
+  else
+    echo "uncommitted: none"
+  fi
+  done_cmd=""
+  dir=$(run_dir "$tree")
+  if run_holding "$tree" >/dev/null && [[ -f "$dir/contract.md" ]]; then
+    done_cmd=$(contract_field "$dir/contract.md" "done")
+  fi
+  pack=$(pack_for "$tree")
+  if [[ -n "$pack" && -f "$pack/checks" ]]; then
+    mapfile -t checks < <(grep -Ev '^[[:space:]]*(#|$)' "$pack/checks")
+  fi
+  if [[ -n "$done_cmd" ]]; then
+    brief_check "done check" "$done_cmd" "$tree" "$code" "$dirty"
+  else
+    echo "done check: none"
+  fi
+  if ((${#checks[@]} == 0)); then
+    if [[ -n "$pack" ]]; then echo "checks: none; the pack has no checks file"; else echo "checks: none; no pack owns this repository"; fi
+  fi
+  for cmd in "${checks[@]}"; do
+    brief_check check "$cmd" "$tree" "$code" "$dirty"
+  done
+}
+
+brief_check() { # brief_check <label> <command> <tree> <code> <dirty>
+  local file result at code out
+  file="$STATE_DIR/verify-brief/$(tree_key "$3")/$(printf '%s\n%s' "$4" "$2" | sha256sum | cut -c1-32).json"
+  echo "$1: $2"
+  if [[ -z "$5" && -f "$file" ]] && at=$(jq -er .at "$file" 2>/dev/null); then
+    code=$(jq -r .exit "$file")
+    out=$(jq -r .out "$file")
+    echo "  exit $code, cached from $at on this code"
+  else
+    result=$(run_done_check "$3" "$2")
+    code=$(head -1 <<<"$result")
+    out=$(tail -n +2 <<<"$result")
+    echo "  exit $code, ran now"
+    if [[ -z "$5" ]]; then
+      mkdir -p "$(dirname "$file")"
+      jq -n --arg at "$(now)" --argjson exit "$code" --arg out "$out" '{at: $at, exit: $exit, out: $out}' | write_atomic "$file"
+    fi
+  fi
+  [[ -z "$out" ]] || sed 's/^/  /' <<<"$out"
+}
+
 merge_fact() { # merge_fact <key> <json>
   MERGE_FACTS=$(jq -c --arg k "$1" --argjson v "$2" '.[$k] = $v' <<<"$MERGE_FACTS")
 }
@@ -1727,6 +1808,11 @@ status) status "$@" ;;
 stats) exec python3 -I "$LIB_DIR/stats.py" "$STATE_DIR" "$HOME/.keel/claude" "$METHOD_DIR" "$@" ;;
 dash) dash "$@" ;;
 verdict) event_start verdict "$@"; verdict "$@" ;;
+verify-brief)
+  event_start verify-brief "$@"
+  (($# == 0)) || die "usage: keel verify-brief"
+  verify_brief
+  ;;
 merge) merge_pr "$@" ;;
 reflect) reflect "$@" ;;
 eval) exec "$KEEL_ROOT/learning/eval.sh" "$@" ;;
