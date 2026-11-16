@@ -28,10 +28,12 @@
 #                               project create|get|order|update <name> [--summary <s>] [--body <file>]
 #   keel template [name] [dir]
 #                             print the issue or project template that applies in dir; no name lists them
-#   keel run start --playbook <name> --goal <text> --steps <file> [--replace]
-#                             start a run in this tree, recorded under ~/.local/state/keel/runs
-#   keel run step <n> doing|done|skip <code> [note]
-#                             move a step on; a skip's code is not-applicable, already-done, user-said or blocked
+#   keel run start --playbook <name> --goal <text> [--steps <file>] [--replace]
+#                             start a run in this tree, recorded under ~/.local/state/keel/runs, with
+#                             the playbook's numbered steps unless --steps names a file of them
+#   keel run step <n> doing|done|skip <code> [note] [--next]
+#                             move a step on; a skip's code is not-applicable, already-done, user-said or
+#                             blocked; --next after done or skip also starts step n+1
 #   keel run pause            pause the run; a resume note on stdin goes into its folder
 #   keel run decide "<decision>" --why <text> --evidence <ref> [--result <text>] [--attention]
 #                             log a decision to the run's decisions.tsv
@@ -1082,7 +1084,7 @@ run_holding() {
 }
 
 run_start() {
-  local playbook="" goal="" steps="" replace=0 contract="" allow_passing=0 tree branch dir held done_cmd="" playbook_hash=""
+  local playbook="" goal="" steps="" replace=0 contract="" allow_passing=0 tree branch dir held done_cmd="" playbook_hash="" book="" lines
   while (($#)); do
     case "$1" in
     --playbook) playbook="${2:-}" && shift 2 ;;
@@ -1091,11 +1093,31 @@ run_start() {
     --replace) replace=1 && shift ;;
     --contract) contract="${2:-}" && shift 2 ;;
     --allow-passing) allow_passing=1 && shift ;;
-    *) die "usage: keel run start --playbook <name> --goal <text> --steps <file> [--contract <file> [--allow-passing]] [--replace]" ;;
+    *) die "usage: keel run start --playbook <name> --goal <text> [--steps <file>] [--contract <file> [--allow-passing]] [--replace]" ;;
     esac
   done
   [[ -n "$playbook" && -n "$goal" ]] || die "run start needs --playbook and --goal"
-  [[ -f "$steps" ]] || die "run start needs --steps <file>, one step per line"
+  # The playbook is read once, so its steps and its hash come from the same version.
+  if [[ -f "$METHOD_DIR/playbooks/$playbook.md" ]]; then
+    book=$(cat "$METHOD_DIR/playbooks/$playbook.md" && echo x)
+    book=${book%x}
+    playbook_hash=$(printf '%s' "$book" | sha256sum | cut -d' ' -f1)
+  fi
+  # A steps file wins; without one, the steps are the playbook's numbered lines,
+  # as keel stats reads them.
+  if [[ -n "$steps" ]]; then
+    [[ -f "$steps" ]] || die "no such steps file: $steps"
+    lines=$(cat "$steps")
+  elif [[ -n "$book" ]]; then
+    lines=$(grep -E '^[0-9]+\.[[:space:]]+' <<<"$book" || true)
+  else
+    die "no playbook named $playbook: give its steps with --steps <file>, one per line"
+  fi
+  # Checked before anything is archived, so a run with no steps replaces nothing.
+  if ! sed -E 's/^[[:space:]]*([0-9]+[.)]|[-*])[[:space:]]+//' <<<"$lines" | grep -q '[^[:space:]]'; then
+    if [[ -n "$steps" ]]; then die "the steps file holds no steps"; fi
+    die "the $playbook playbook has no numbered steps"
+  fi
   tree=$(tree_of "$PWD")
   dir=$(run_dir "$tree")
   if [[ "$replace" == 0 ]] && held=$(run_holding "$tree"); then
@@ -1117,13 +1139,10 @@ run_start() {
     run_archive "$dir" "$(jq -r .state "$dir/status.json")" "$(jq -r '.note // ""' "$dir/status.json")"
   fi
   branch=$(git -C "$tree" symbolic-ref -q --short HEAD 2>/dev/null || echo "")
-  # The playbook file's hash tells runs that followed different versions of
-  # the same playbook apart.
-  [[ -f "$METHOD_DIR/playbooks/$playbook.md" ]] && playbook_hash=$(sha256sum "$METHOD_DIR/playbooks/$playbook.md" | cut -d' ' -f1)
   mkdir -p "$dir"
   # One step per non-empty line, a leading "1. " or "- " dropped.
   jq -n --arg tree "$tree" --arg branch "$branch" --arg playbook "$playbook" --arg goal "$goal" \
-    --arg now "$(now)" --rawfile steps "$steps" --arg ph "$playbook_hash" '{
+    --arg now "$(now)" --arg steps "$lines" --arg ph "$playbook_hash" '{
       version: 1, tree: $tree, branch: $branch, playbook: $playbook, goal: $goal,
       playbook_hash: (if $ph == "" then null else $ph end),
       state: "active",
@@ -1132,10 +1151,6 @@ run_start() {
       current: null, started_at: $now, updated_at: $now, stale: false,
       attention: 0, done_check: null, verifier: null, gate: null, contract_hash: null
     }' | write_atomic "$dir/status.json"
-  [[ "$(jq '.steps | length' "$dir/status.json")" -gt 0 ]] || {
-    rm -rf "$dir"
-    die "the steps file holds no steps"
-  }
   if [[ -n "$contract" ]]; then
     cp "$contract" "$dir/contract.md"
     run_update "$dir" '.contract_hash = $h' --arg h "$(sha256sum "$dir/contract.md" | cut -d' ' -f1)"
@@ -1163,8 +1178,15 @@ held_run_dir() { # held_run_dir <tree or ""> [any]: "any" also takes a run that 
 SKIP_CODES="not-applicable already-done user-said blocked"
 
 run_step() {
-  local n="${1:-}" state="${2:-}" code="${3:-}" reason="${4:-}" dir count usage="usage: keel run step <n> doing|done|skip <code> [note]"
+  local usage="usage: keel run step <n> doing|done [--next] | skip <code> [note] [--next]" next=false dir count
+  # --next, last, also starts the step after: one call to close a step and open the next.
+  if (($#)) && [[ "${!#}" == --next ]]; then
+    next=true
+    set -- "${@:1:$#-1}"
+  fi
+  local n="${1:-}" state="${2:-}" code="${3:-}" reason="${4:-}"
   [[ "$n" =~ ^[0-9]+$ && $# -le 4 ]] || die "$usage"
+  [[ "$next" == false || "$state" != doing ]] || die "--next follows done or skip, not doing"
   case "$state" in
   doing | done) (($# <= 2)) || die "only skip takes a code and a note" ;;
   skip) [[ "$code" =~ ^[a-z-]+$ && " $SKIP_CODES " == *" $code "* ]] ||
@@ -1174,23 +1196,27 @@ run_step() {
   dir=$(held_run_dir "") || exit 1
   count=$(jq '.steps | length' "$dir/status.json")
   ((n >= 1 && n <= count)) || die "the run has steps 1 to $count"
+  [[ "$next" == false ]] || ((n < count)) || die "step $n is the last, so there is no step for --next to start"
   # A step being worked on is the current one; finishing or skipping it moves
   # current to the first step still open. Touching a paused run resumes it.
   # Setting a step to doing closes any other step's open attempt and opens one
   # on this step, unless it already has one open; done and skip close it.
   run_update "$dir" "$ATTEMPTS_JQ"'
-    (if $s == "doing" then
-      .steps |= (to_entries | map(if .key == $i then .value else .value | close_attempt("left") end))
-      | if (.steps[$i].attempts | length) > 0 and .steps[$i].attempts[-1].ended_at == null then .
-        else .steps[$i].attempts = .steps[$i].attempts + [{started_at: $now, ended_at: null, state: "doing"}] end
-    else .steps[$i] |= close_attempt(if $s == "skip" then "skipped" else "done" end) end)
+    def start($k):
+      .steps |= (to_entries | map(if .key == $k then .value else .value | close_attempt("left") end))
+      | (if (.steps[$k].attempts | length) > 0 and .steps[$k].attempts[-1].ended_at == null then .
+         else .steps[$k].attempts = .steps[$k].attempts + [{started_at: $now, ended_at: null, state: "doing"}] end)
+      | .steps[$k].state = "doing" | .steps[$k].skip_code = null | .steps[$k].reason = null
+      | .current = $k + 1;
+    (if $s == "doing" then start($i)
+     else .steps[$i] |= close_attempt(if $s == "skip" then "skipped" else "done" end)
+       | .steps[$i].state = (if $s == "skip" then "skipped" else $s end)
+       | .steps[$i].skip_code = (if $s == "skip" then $c else null end)
+       | .steps[$i].reason = (if $s == "skip" and $r != "" then $r else null end)
+       | .current = ([.steps | to_entries[] | select(.value.state == "pending" or .value.state == "doing") | .key + 1] | first) end)
     | .state = "active"
-    | .steps[$i].state = (if $s == "skip" then "skipped" else $s end)
-    | .steps[$i].skip_code = (if $s == "skip" then $c else null end)
-    | .steps[$i].reason = (if $s == "skip" and $r != "" then $r else null end)
-    | .current = (if $s == "doing" then $i + 1
-        else ([.steps | to_entries[] | select(.value.state == "pending" or .value.state == "doing") | .key + 1] | first) end)' \
-    --argjson i "$((n - 1))" --arg s "$state" --arg c "$code" --arg r "$reason"
+    | if $next then start($i + 1) else . end' \
+    --argjson i "$((n - 1))" --arg s "$state" --arg c "$code" --arg r "$reason" --argjson next "$next"
   if [[ "$state" == skip ]]; then
     log_row "$dir" "skipped step $n" "$code${reason:+: $reason}" "$(jq -r ".steps[$((n - 1))].title" "$dir/status.json")" "skipped" yes
   fi

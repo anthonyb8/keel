@@ -803,6 +803,32 @@ eq "a skip with a code and no note has a null reason" '["blocked",null]' "$(jq -
 eq "a run for a playbook with no file records a null hash" "null" "$(jq -r .playbook_hash "$f")"
 (cd "$R2" && "$K" run stop stopped >/dev/null)
 
+# Steps from the playbook itself, and --next, in a tree of their own.
+create RN "$ACME" feature/run-next
+in_rn() { (cd "$RN" && "$K" "$@"); }
+stn() { (cd "$RN" && "$K" status --json .) | jq -rc "$1"; }
+in_rn run start --playbook issue --goal g >/dev/null
+eq "without --steps a run records its playbook's numbered steps word for word" \
+  "$(sed -nE 's/^[0-9]+\.[[:space:]]+//p' "$ROOT/method/playbooks/issue.md" | jq -Rsc 'split("\n")[:-1]')" "$(stn '[.[0].steps[].title]')"
+in_rn run step 3 doing
+in_rn run step 3 "done" --next
+eq "done --next closes the step and starts the next in one call" '[3,"done","doing",4]' \
+  "$(stn '.[0] | [3, .steps[2].state, .steps[3].state, .current]')"
+in_rn run step 4 skip blocked 'no "browser"; here' --next
+eq "and so does a skip, keeping its code and note" '["skipped","blocked","no \"browser\"; here","doing",5]' \
+  "$(stn '.[0] | [.steps[3].state, .steps[3].skip_code, .steps[3].reason, .steps[4].state, .current]')"
+last_step=$(stn '.[0].steps | length')
+st_before=$(cat "$(in_rn run dir)/status.json")
+err=$(in_rn run step "$last_step" "done" --next 2>&1)
+check "--next on the last step is refused with why" grep -q "is the last, so there is no step for --next to start" <<<"$err"
+eq "changing nothing" "$st_before" "$(cat "$(in_rn run dir)/status.json")"
+check "--next after doing is refused, by its own check" grep -qF "follows done or skip, not doing" <<<"$(in_rn run step 6 doing --next 2>&1)"
+: >"$T/empty-steps.md"
+check "a playbook with no file needs --steps" grep -q "no playbook named no-such: give its steps with --steps" <<<"$(in_rn run start --playbook no-such --goal g --replace 2>&1)"
+refute "a replacing run with no steps is refused" in_rn run start --playbook bug-fix --goal g --steps "$T/empty-steps.md" --replace
+eq "before the run it would replace is archived" "issue active" "$(stn '.[0] | "\(.playbook) \(.state)"')"
+in_rn run stop stopped >/dev/null
+
 section "contracts"
 create R3 "$ACME" feature/run-3
 in_r3() { (cd "$R3" && "$K" "$@"); }
@@ -1508,9 +1534,11 @@ call(5, "m1", "Skill", {"skill": "pickup"})
 call(20, "m2", "Bash", {"command": "keel run start --playbook issue --goal g --steps f"})
 call(30, "m3", "Bash", {"command": "keel run step 5 doing"})
 call(40, "m4", "Skill", {"skill": "mockup"})
-call(50, "m5", "Bash", {"command": "keel run step 11 doing"})
+# Step 11 is entered by skipping step 10 with --next, its note quoting a ";",
+# and step 12 by finishing step 11 with --next.
+call(50, "m5", "Bash", {"command": "keel run step 10 skip blocked 'no browser; none here' --next"})
 call(60, "m6", "Skill", {"skill": "simplify"})
-call(90, "m7", "Bash", {"command": "keel run step 12 doing"})
+call(90, "m7", "Bash", {"command": "keel run step 11 done --next"})
 typed(120, "ship")
 lines.append({"type": "assistant", "timestamp": at(125), "cwd": "/work/inv", "message": {"id": "m8", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "text", "text": "shipping"}]}})
 typed(130, "login")

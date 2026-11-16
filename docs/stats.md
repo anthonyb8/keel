@@ -41,7 +41,7 @@ Each transcript's totals are cached under `~/.local/state/keel/stats-cache/`, ke
   Claude Code's own commands, such as `/login`, and other packs' skills are left out.
 - **What started a run** is the installed skill invoked directly that held the work when its `keel run start` ran, such as `/pickup`, else the router.
   Step texts come from the playbook files as they are now, so a run that followed an older version is named by the current one.
-- **A run of a skill** is a run entering the step that runs it, found from the `keel run start` and `keel run step <n> doing` calls in the transcript that ran. A start counts only when a run folder for its playbook began while the call ran, so a start keel refused, or text that only mentions one, counts nothing; a call the user denied or a hook refused never ran. A compound command that failed on another part still moved the run.
+- **A run of a skill** is a run entering the step that runs it, found from the `keel run start` and `keel run step <n> doing` calls in the transcript that ran, a `keel run step <n> done` or `skip` with `--next` entering step n+1. A start counts only when a run folder for its playbook began while the call ran, so a start keel refused, or text that only mentions one, counts nothing; a call the user denied or a hook refused never ran. A compound command that failed on another part still moved the run.
 - **Agent time** is the gaps between a session's messages while the step is current, leaving out gaps over 30 minutes as idle.
   **Waiting** is the gap before each message the user typed.
   A verifier's time is its own first-to-last message.

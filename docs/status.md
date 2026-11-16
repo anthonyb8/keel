@@ -42,8 +42,8 @@ An archived run also has `ended_at` and `note`.
 
 ## Commands
 
-- `keel run start --playbook <name> --goal <text> --steps <file> [--replace]` starts a run in the current tree. It refuses when an active or paused run holds the tree, unless `--replace`, which archives the old one as `stopped`.
-- `keel run step <n> doing|done|skip <code> [note]` moves a step on, and resumes a paused run. A skip takes one of four codes, `not-applicable`, `already-done`, `user-said` or `blocked`, and any other is refused with the four listed.
+- `keel run start --playbook <name> --goal <text> [--steps <file>] [--replace]` starts a run in the current tree, with the playbook's numbered steps, word for word, read from the same version of the file its hash is taken from; `--steps <file>`, one step per line, gives them instead, as for a task no playbook fits. It refuses when an active or paused run holds the tree, unless `--replace`, which archives the old one as `stopped`.
+- `keel run step <n> doing|done|skip <code> [note] [--next]` moves a step on, and resumes a paused run; `--next` after `done` or a skip also starts step n+1 in the same update, and on the last step it is refused, changing nothing. A skip takes one of four codes, `not-applicable`, `already-done`, `user-said` or `blocked`, and any other is refused with the four listed.
 - `keel run pause` pauses the run; a resume note on stdin is kept in its folder as `resume.md`.
 - `keel run stop done|stopped|failed [--note <text>] [--tree <path>]` ends the run and archives it.
 

@@ -10,7 +10,8 @@ runs "with", "through" or "run"; a step running none counts as
 `<playbook> step <n>`, the time before step 1 as the router, and each
 keel-verifier spawn as /verify. Tool calls, time and tokens are given to the
 step a run had in `doing` when they happened, found from the `keel run start`
-and `keel run step <n> doing` calls in the transcript; a subagent counts
+and `keel run step <n> doing` calls in the transcript, a `done` or `skip`
+with `--next` entering the step after; a subagent counts
 toward the step its first message falls in. A skill is also counted when it is
 invoked directly, typed as `/name` or called through the agent's Skill tool;
 the invocation holds what happens until the next message the user types or
@@ -50,9 +51,12 @@ TOKEN_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_t
 # reads cost about a tenth of the rest, so a total alone misleads on cost.
 KINDS = ("input", "cache_write", "cache_read", "output")
 STEP_LINE = re.compile(r"^(\d+)\.\s+(.*)$")
-# keel run start, step <n> doing and stop, in the order a command runs them;
-# a start's --playbook is read within its own part of the command.
-RUN_CALL = re.compile(r"keel run (?:start\b[^;&|\n]*?--playbook\s+['\"]?([\w-]+)|step (\d{1,4}) doing\b|(stop)\b)")
+# keel run start, step <n> doing, step <n> done or skip with --next, which
+# enters step n+1, and stop, in the order a command runs them; a start's
+# --playbook and a step's --next are read within their own part of the command.
+RUN_CALL = re.compile(r"keel run (?:start\b[^;&|\n]*?--playbook\s+['\"]?([\w-]+)|step (\d{1,4}) doing\b"
+                      r"|step (\d{1,4}) (?:done|skip\b(?:[^;&|\n'\"]|\"[^\"\n]*\"|'[^'\n]*')*?)\s+--next(?![\w-])"
+                      r"|(stop)\b)")
 # How far a run folder's start may sit outside the call that made it.
 SLACK = dt.timedelta(seconds=5)
 
@@ -374,7 +378,9 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
             if c.get("is_error") and not result_text(c.get("content")).lstrip().startswith("Exit code"):
                 continue
             for call in RUN_CALL.finditer(command):
-                started_pb, n_text, stopped = call.groups()
+                started_pb, n_text, before_next, stopped = call.groups()
+                if before_next:
+                    n_text = str(int(before_next) + 1)
                 # A start counts when a run folder for that playbook began while
                 # the call ran, which also rules out a refused start and a command
                 # that only mentions one; its output can be redirected away.
