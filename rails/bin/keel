@@ -1458,16 +1458,21 @@ verdict() { # verdict [--json]
 # recognise is exit 2.
 MERGE_FACTS='{}'
 
-# A keel script that settles a step's clear path appends one line per call to
-# events.jsonl: what it was asked, how it exited, why, how long it took, and
-# the run and step it ran in, so what each script settles can be counted.
+# Each keel script a step calls, such as run, linear, verdict, stack and merge,
+# appends one line per call to events.jsonl: what it was asked, how it exited,
+# why, how long it took, and the run and step it ran in, so what each script
+# settles can be counted. Hooks and polled commands, such as status, do not log.
 # Writing the line never changes the script's own exit code or output.
 EVENT_REASON=""
 
 event_start() { # event_start <cmd> [args...]: logs the call when the script exits
   EVENT_CMD="$1"
   shift
-  EVENT_ARGS=$(jq -cn '$ARGS.positional' --args "$@")
+  # NUL-separated, since jq reads an argument such as --playbook as its own option.
+  EVENT_ARGS='[]'
+  if (($#)); then
+    EVENT_ARGS=$(printf '%s\0' "$@" | jq -Rsc 'split("\u0000")[:-1]' 2>/dev/null) || EVENT_ARGS='[]'
+  fi
   EVENT_T0=$(date +%s%3N)
   trap 'event_log $?' EXIT
 }
@@ -1710,20 +1715,22 @@ base) base_for "${1:-$PWD}" ;;
 protected) protected_for "${1:-$PWD}" ;;
 provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
-run) run "$@" ;;
+run) event_start "run${1:+ $1}" "$@"; run "$@" ;;
 status) status "$@" ;;
 stats) exec python3 -I "$LIB_DIR/stats.py" "$STATE_DIR" "$HOME/.keel/claude" "$METHOD_DIR" "$@" ;;
 dash) dash "$@" ;;
-verdict) verdict "$@" ;;
+verdict) event_start verdict "$@"; verdict "$@" ;;
 merge) merge_pr "$@" ;;
 reflect) reflect "$@" ;;
 eval) exec "$KEEL_ROOT/learning/eval.sh" "$@" ;;
-linear) linear "$@" ;;
+linear) event_start "linear${1:+ $1}" "$@"; linear "$@" ;;
 template)
   if [[ -n "${1:-}" ]]; then template_for "$1" "${2:-$PWD}"; else template_names "$PWD"; fi
   ;;
 e2e) e2e "$@" ;;
 stack)
+  # Logged here, not in stack_down or stack_release, which hooks call directly.
+  event_start "stack${1:+ $1}" "$@"
   case "${1:-}" in
   up) shift && stack_up "$PWD" "$@" ;;
   down) stack_down "$PWD" ;;

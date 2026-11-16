@@ -599,6 +599,23 @@ err=$(lin "$ACME" project update keel --summary "${long}x" 2>&1 >/dev/null)
 check "one over is refused" grep -q "Linear allows 255" <<<"$err"
 eq "before anything is sent" "$requests" "$(sent)"
 
+# Every script a step calls logs each call; an unwritable log changes nothing.
+EVL="$HOME/.local/state/keel/events.jsonl"
+logged_calls() { # each read-only logged call's output and exit, from $ACME
+  local c
+  for c in "linear get ANB-31" "verdict" "stack status"; do
+    # shellcheck disable=SC2086 # each call is split into its words on purpose
+    (cd "$ACME" && $K $c 2>&1; echo "exit $?")
+  done
+}
+ev_before=$(logged_calls)
+eq "linear, verdict and stack each log their command, arguments and exit" \
+  '[["linear get",["get","ANB-31"],0],["verdict",[],1],["stack status",["status"],1]]' \
+  "$(tail -3 "$EVL" | jq -sc 'map([.cmd, .args, .exit])')"
+mv "$EVL" "$T/events.saved" && mkdir "$EVL"
+eq "with events.jsonl unwritable, each call's output and exit are as they were" "$ev_before" "$(logged_calls)"
+rmdir "$EVL" && mv "$T/events.saved" "$EVL"
+
 check "every request went through curl's argument log" test "$(grep -c . "$T/curl-args")" -eq "$(sent)"
 check "the key never appears in any output, error, request body or curl command line" \
   test -z "$(grep -F "$STUB_KEY" "$OUT" "$T/linear.log" "$T/curl-args")"
@@ -1164,6 +1181,9 @@ km squash 12 >/dev/null
 eq "a merge that broke logs exit 1 with its error" '[1,true]' "$(ev '[.exit, (.reason | startswith("gh refused the merge"))]')"
 mreset
 (cd "$MR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null && "$K" run step 2 doing)
+eq "keel run logs each call with its arguments, flags included, and the run's step after it" \
+  '[["run start",["start","--playbook","issue","--goal","g","--steps","'"$T"'/steps.md"],0,"issue",null],["run step",["step","2","doing"],0,"issue",2]]' \
+  "$(tail -2 "$EV" | jq -sc 'map([.cmd, .args, .exit, .playbook, .step])')"
 km squash 12 >/dev/null
 eq "inside a run it records the run's playbook and step" '["issue",2]' "$(ev '[.playbook, .step]')"
 (cd "$MR" && "$K" run stop stopped >/dev/null)
