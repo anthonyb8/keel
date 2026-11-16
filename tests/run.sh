@@ -1194,12 +1194,21 @@ eq "a verifier's spawns are /verify's runs, with their time, tokens, models and 
 eq "a skill's step gets its time, the user's wait and its subagents' tokens" \
   '[150,1,{"session":440,"subagents":1000},{"keel-agent":1},600]' \
   "$(skill audit-code '[.agent_s, .runs, .tokens, .subagents, .wait_s]')"
+# Each session message is 3 input, 7 cache write, 90 cache read and 10 output;
+# the keel-agent's one message is 100, 200, 300 and 400.
+eq "a skill's tokens split by kind across its session and subagents, with a turn per message in each" \
+  '[{"cache_read":660,"cache_write":228,"input":112,"output":440},{"session":4,"subagents":1}]' \
+  "$(skill audit-code '[.tokens_by_kind, .turns]')"
+eq "a verifier's tokens by kind and turns are /verify's, in subagents" \
+  '[{"cache_read":0,"cache_write":0,"input":0,"output":5000},{"session":0,"subagents":2}]' \
+  "$(skill verify '[.tokens_by_kind, .turns]')"
 eq "a step naming no skill counts as the playbook's step, with going back to it a rerun" '[145,4,1,2]' \
   "$(skill "bug-fix step 1" '[.agent_s, .calls, .reruns, .runs]')"
 # m2's second line falls after its own `step 1 doing`, so a lost dedup shows in step 1, not the router.
 eq "a message split over two lines counts its tokens once" "440" "$(skill "bug-fix step 1" '.tokens.session')"
-eq "a run's step carries its own tokens, its subagents' included" '{"session":440,"subagents":1000}' \
-  "$(jq -cS '.playbooks[0].steps[4].tokens' <<<"$out")"
+eq "a run's step carries its own tokens and turns, its subagents' included" \
+  '[{"session":440,"subagents":1000},{"cache_read":660,"cache_write":228,"input":112,"output":440},{"session":4,"subagents":1}]' \
+  "$(jq -cS '.playbooks[0].steps[4] | [.tokens, .tokens_by_kind, .turns]' <<<"$out")"
 eq "a run's steps carry their attempts, attempt time and skip codes" '[2,145,1,{"already-done":1}]' \
   "$(jq -c '.playbooks[0].steps | [.[0].attempts, .[0].attempt_s, .[0].rerun_runs, .[1].skip_codes]' <<<"$out")"
 eq "scripts are counted from events.jsonl, with what they handed back" '[2,{"0":1,"2":1},[["a check is still pending",1]]]' \
@@ -1218,6 +1227,9 @@ eq "--since leaves out runs and steps from before that day" '[[],[],["2026-11-11
 eq "--repo keeps only trees with that name in their path" '[0,4]' \
   "$(jq -cn --argjson a "$(ks --json --repo other)" --argjson b "$(ks --json --repo app)" '[($a.skills | length), ($b.skills | length)]')"
 check "without --json it prints a table of skills" grep -qE '^verify +2 ' <<<"$(ks)"
+# verify's two runs make turns per run differ from its turns.
+check "with each skill's cache-read share and turns per run" bash -c \
+  'grep -qE "^audit-code .* 46% +5\.0 " <<<"$1" && grep -qE "^verify +2 .* 0% +1\.0 " <<<"$1"' _ "$(ks)"
 # The same session again in another repository, its run started the day
 # before, with three lines whose fields cannot be read.
 late="$HOME/.keel/claude/projects/-work-late"

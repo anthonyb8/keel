@@ -288,6 +288,9 @@ const fmtMin = s => { const m = s / 60; return m >= 120 ? (m / 60).toFixed(1) + 
 const fmtTok = n => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e7 ? Math.round(n / 1e6) + "M" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(Math.round(n));
 const pct = (a, b) => b ? Math.round(a / b * 100) + "%" : "0%";
 const tok = s => s.tokens.session + s.tokens.subagents;
+const turns = s => s.turns.session + s.turns.subagents;
+const fmtTurns = n => n >= 10 ? String(Math.round(n)) : n.toFixed(1);
+const cacheShare = s => pct(s.tokens_by_kind.cache_read, tok(s)) + " cache reads";
 const invokedText = s => [s.invoked.typed ? "you typed it " + s.invoked.typed + "×" : "", s.invoked.agent ? "the agent called it " + s.invoked.agent + "×" : ""].filter(Boolean).join(", ");
 const where = s => !s.runs ? "not run in range" : s.name === "router" ? "before step 1 of every run" : s.name === "verify" ? "each keel-verifier spawned"
   : [s.where.join(", "), invokedText(s)].filter(Boolean).join("; ");
@@ -297,7 +300,7 @@ const skills = S.skills;
 // Every installed skill: the texts map holds one entry per skill, named
 // without a space; those with no runs in range get an empty row.
 const unrun = Object.keys(T).filter(k => !k.includes(" ") && k !== "router" && !skills.some(s => s.name === k)).sort()
-  .map(name => ({name, where: [], runs: 0, calls: 0, agent_s: 0, wait_s: 0, tokens: {session: 0, subagents: 0}, models: {}, subagents: {}, reruns: 0, how: [], invoked: {typed: 0, agent: 0}}));
+  .map(name => ({name, where: [], runs: 0, calls: 0, agent_s: 0, wait_s: 0, tokens: {session: 0, subagents: 0}, tokens_by_kind: {input: 0, cache_write: 0, cache_read: 0, output: 0}, turns: {session: 0, subagents: 0}, models: {}, subagents: {}, reruns: 0, how: [], invoked: {typed: 0, agent: 0}}));
 
 // The filters keel dash was given, beside the title only when there are any.
 const filters = [S.since ? "since " + S.since : "", S.repo ? "repository " + S.repo : ""].filter(Boolean);
@@ -425,17 +428,18 @@ function renderSkills() {
   const maxT = Math.max(1, ...rows.map(s => (s.agent_s + s.wait_s) / d(s)));
   const maxK = Math.max(1, ...rows.map(s => tok(s) / d(s)));
   const t = document.getElementById("skills-table");
-  t.replaceChildren(el("tr", {}, el("th", {}, "Skill"), el("th", {}, "How it runs"), el("th", {class: "r"}, "Runs"), el("th", {}, per ? "Agent time per run" : "Agent time"), el("th", {}, per ? "Tokens per run" : "Tokens"), el("th", {}, "Reruns"), el("th", {}, "Model")));
+  t.replaceChildren(el("tr", {}, el("th", {}, "Skill"), el("th", {}, "How it runs"), el("th", {class: "r"}, "Runs"), el("th", {}, per ? "Agent time per run" : "Agent time"), el("th", {}, per ? "Tokens per run" : "Tokens"), el("th", {class: "r"}, per ? "Turns per run" : "Turns"), el("th", {}, "Reruns"), el("th", {}, "Model")));
   const shown = state.all && unrun.length ? [...rows, null, ...unrun] : rows;
   for (const s of shown) {
-    if (!s) { t.append(el("tr", {}, el("td", {class: "divider", colspan: "7"}, "Not run in range"))); continue; }
+    if (!s) { t.append(el("tr", {}, el("td", {class: "divider", colspan: "8"}, "Not run in range"))); continue; }
     const top = Object.entries(s.models).sort((a, b) => b[1] - a[1]).map(([m]) => modelName(m));
     t.append(el("tr", {class: (s.name === state.sel ? "on" : "") + (s.runs ? "" : " off")},
       el("td", {}, el("button", {class: "rowbtn", "aria-pressed": String(s.name === state.sel), onclick: () => { state.sel = s.name; renderSkills(); }}, el("b", {}, s.name), el("small", {}, where(s)))),
       el("td", {class: "nowrap"}, s.how.length ? el("span", {class: "how " + s.how[0], title: s.how.join(", ")}, s.how[0] + (s.how.length > 1 ? " +" + (s.how.length - 1) : "")) : el("span", {class: "how none"}, "not run")),
       el("td", {class: "r mono", style: state.q === "often" ? "font-weight: 700" : ""}, String(s.runs)),
       el("td", {}, s.runs ? meter([[s.agent_s / d(s), "var(--blue)"], [s.wait_s / d(s), "var(--orange)"]], maxT, fmtMin(s.agent_s / d(s)) + " agent time, " + fmtMin(s.wait_s / d(s)) + " waiting", fmtMin(s.agent_s / d(s))) : "-"),
-      el("td", {}, s.runs ? meter([[s.tokens.session / d(s), "var(--ink)"], [s.tokens.subagents / d(s), "var(--green)"]], maxK, fmtTok(s.tokens.session / d(s)) + " session, " + fmtTok(s.tokens.subagents / d(s)) + " subagents", fmtTok(tok(s) / d(s))) : "-"),
+      el("td", {}, s.runs ? meter([[s.tokens.session / d(s), "var(--ink)"], [s.tokens.subagents / d(s), "var(--green)"]], maxK, fmtTok(s.tokens.session / d(s)) + " session, " + fmtTok(s.tokens.subagents / d(s)) + " subagents, " + cacheShare(s), fmtTok(tok(s) / d(s))) : "-"),
+      el("td", {class: "r mono", title: s.runs ? s.turns.session + " in the session, " + s.turns.subagents + " in subagents" : ""}, s.runs ? fmtTurns(turns(s) / d(s)) : "-"),
       el("td", {class: "nowrap", style: "font-size: 12px; color: " + (rerunText(s) === "none" ? "var(--muted)" : "var(--orange-ink)")}, s.runs ? rerunText(s) : "-"),
       el("td", {}, top.length ? el("span", {class: "pill", title: top.join(", ")}, top[0] + (top.length > 1 ? " +" + (top.length - 1) : "")) : "-")));
   }
@@ -456,9 +460,9 @@ function renderDetail(s) {
   const kids = [
     el("div", {}, el("p", {class: "sub"}, where(s)), el("h2", {class: "mono", style: "font-size: 17px"}, s.name)),
     el("div", {class: "cards2"}, [
-      ["Runs", String(s.runs), s.name === "verify" ? "verifiers spawned" : s.calls + " tool calls"],
+      ["Runs", String(s.runs), (s.name === "verify" ? "verifiers spawned" : s.calls + " tool calls") + ", " + fmtTurns(turns(s) / n) + " turns per run"],
       ["Agent time per run", fmtMin(s.agent_s / n), fmtMin(s.agent_s) + " in total"],
-      ["Tokens per run", fmtTok(total / n), pct(s.tokens.subagents, total) + " in subagents"],
+      ["Tokens per run", fmtTok(total / n), pct(s.tokens.subagents, total) + " in subagents, " + cacheShare(s)],
       ["Waiting per run", fmtMin(s.wait_s / n), fmtMin(s.wait_s) + " in total"],
     ].map(([k, val, sub]) => el("div", {class: "mini"}, el("div", {class: "k"}, k), el("div", {class: "v"}, val), el("div", {class: "s"}, sub)))),
   ];
@@ -636,7 +640,7 @@ function renderPlaybooks() {
 
   const steps = pbSteps(name), t = document.getElementById("pb-steps");
   t.replaceChildren(el("tr", {}, el("th", {}, "#"), el("th", {}, "Step"), el("th", {}, "Runs"), el("th", {class: "r"}, "Done"),
-    el("th", {}, "Skipped"), el("th", {class: "r"}, "Agent / run"), el("th", {class: "r"}, "Tokens / run")));
+    el("th", {}, "Skipped"), el("th", {class: "r"}, "Agent / run"), el("th", {class: "r"}, "Tokens / run"), el("th", {class: "r"}, "Turns / run")));
   for (const st of steps) {
     const r = st.row, seen = r ? r.done + r.skipped + r.open : 0, per = r && r.entered ? r.entered : 0;
     const skipped = !r || !r.skipped ? el("span", {class: "mono", style: "color: var(--muted)"}, r ? "0" : "-")
@@ -650,7 +654,8 @@ function renderPlaybooks() {
       el("td", {class: "r mono"}, r ? String(r.done) : "-"),
       el("td", {}, skipped),
       el("td", {class: "r mono"}, per ? fmtMin(r.agent_s / per) : "-"),
-      el("td", {class: "r mono"}, per ? fmtTok((r.tokens.session + r.tokens.subagents) / per) : "-")));
+      el("td", {class: "r mono", title: per ? cacheShare(r) : ""}, per ? fmtTok(tok(r) / per) : "-"),
+      el("td", {class: "r mono"}, per ? fmtTurns(turns(r) / per) : "-")));
   }
   const cur = steps.find(st => st.n === pbState.n) || steps[0];
   const host = document.getElementById("pb-text");
