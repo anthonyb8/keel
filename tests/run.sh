@@ -586,6 +586,8 @@ eq "project order lists blockers first, then the lowest number, ignoring other r
   "ANB-9 ANB-12 ANB-10 ANB-11" "$(lin "$ACME" project order keel | cut -f1 | paste -sd' ')"
 eq "with each issue's state and title" "$(printf 'ANB-9\tTodo\ttANB-9')" "$(lin "$ACME" project order keel | head -1)"
 eq "and the same number in two teams by team key" "ANB-5 OTH-5" "$(lin "$ACME" project order teams | cut -f1 | paste -sd' ')"
+err=$(lin "$ACME" project order nope 2>&1 >/dev/null)
+eq "project order on a project Linear lacks says only that" "keel: no project named nope" "$err"
 err=$(lin "$ACME" project order loop 2>&1 >/dev/null)
 refute "project order fails on issues that block each other" lin "$ACME" project order loop
 check "naming them" grep -q "these issues block each other: ANB-1 ANB-2" <<<"$err"
@@ -1578,10 +1580,10 @@ check "a result naming this content passes" ci
 echo "A line." >>"$CI/method/skills/pickup/SKILL.md"
 git -C "$CI" commit -qam "pickup skill"
 # bug-fix is still reached by its own change above, and its result is now stale.
-eq "a skill change reaches the playbooks it names, and no others" "bug-fix issue" "$(ci | grep '^FAIL' | awk '{print $2}' | tr -d ':' | sort | paste -sd' ')"
+eq "a skill change reaches the playbooks it names, and no others" "bug-fix issue project" "$(ci | grep '^FAIL' | awk '{print $2}' | tr -d ':' | sort | paste -sd' ')"
 echo "A line." >>"$CI/trust/skills/verify/SKILL.md"
 git -C "$CI" commit -qam "verify skill"
-eq "and the playbooks that run it" "autonomous-run babysit-pr bug-fix issue" \
+eq "and the playbooks that run it" "autonomous-run babysit-pr bug-fix issue project" \
   "$(ci | grep '^FAIL' | awk '{print $2}' | tr -d ':' | sort | paste -sd' ')"
 echo "A line." >>"$CI/method/router.md"
 git -C "$CI" commit -qam "router"

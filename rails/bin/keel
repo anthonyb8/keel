@@ -753,7 +753,7 @@ project_get() { # project_get <name>
 # A project's description is capped at 255 characters by Linear, so the long
 # text goes in its content.
 linear_project() {
-  local team="$1" verb="${2:-}" name="${3:-}" summary="" body="" tid pid
+  local team="$1" verb="${2:-}" name="${3:-}" summary="" body="" tid pid project
   [[ -n "$verb" && -n "$name" ]] || die "usage: keel linear project create|get|order|update <name> [--summary <s>] [--body <file>]"
   shift 3
   while (($#)); do
@@ -775,7 +775,8 @@ linear_project() {
     # it, and among those ready, the lowest number goes first, then the team
     # key, so the same project always gives the same order. A blocker outside the project is
     # the issue's own playbook's to ask about.
-    project_get "$name" | jq -r '
+    project=$(project_get "$name") || exit 1
+    jq -r '
       .issues.nodes | map({id: .identifier, title, state: .state.name,
         by: [.inverseRelations.nodes[] | select(.type == "blocks") | .issue.identifier]}) as $all
       | ($all | map(.id)) as $ids
@@ -786,7 +787,7 @@ linear_project() {
              | sort_by(.id | capture("^(?<team>.*)-(?<n>[0-9]+)$") | [(.n | tonumber), .team])) as $ready
           | if $ready == [] then error("these issues block each other: \(.left | map(.id) | join(" "))")
             else .placed += [$ready[0]] | .left -= [$ready[0]] end)
-      | .placed[] | "\(.id)\t\(.state)\t\(.title)"' || die "could not order the issues of $name"
+      | .placed[] | "\(.id)\t\(.state)\t\(.title)"' <<<"$project" || die "could not order the issues of $name"
     ;;
   create)
     tid=$(team_id "$team") || exit 1
