@@ -778,7 +778,10 @@ linear_update() {
     case "$1" in
     --state) state="${2:-}" && shift 2 ;;
     --body) body="${2:-}" && shift 2 ;;
-    --only-from) from="${2:-}" && shift 2 ;;
+    --only-from)
+      [[ -n "${2:-}" ]] || die "--only-from needs the states to move from, such as Backlog,Todo"
+      from="$2" && shift 2
+      ;;
     *) die "$usage" ;;
     esac
   done
@@ -1697,9 +1700,11 @@ ship_fact() { # ship_fact <key> <json>
   SHIP_FACTS=$(jq -c --arg k "$1" --argjson v "$2" '.[$k] = $v' <<<"$SHIP_FACTS")
 }
 
-ship_ask() { # ship_ask <reason>: hands the ship to the agent
-  EVENT_REASON="$1"
-  jq -n --arg r "$1" --argjson f "$SHIP_FACTS" '{result: "ask", reason: $r} + $f'
+ship_ask() { # ship_ask <reason>: hands the ship to the agent, saying first what it already did
+  local why
+  why=$(jq -r --arg r "$1" '(if .committed then "committed \(.committed)\(if .pushed then " and pushed it" else "" end); " else "" end) + $r' <<<"$SHIP_FACTS")
+  EVENT_REASON="$why"
+  jq -n --arg r "$why" --argjson f "$SHIP_FACTS" '{result: "ask", reason: $r} + $f'
   exit 2
 }
 
@@ -1785,7 +1790,7 @@ ship_cmd() { # ship <commit|push|pr> [--files <path>...] [--message <file>] [--t
     ship_fact verify "$(jq -cn --arg r "$skip" '"skipped: \($r)"')"
   elif ! out=$(cd "$tree" && verdict 2>&1); then
     ship_fact verdict "$(jq -Rs . <<<"$out")"
-    ship_ask "$(jq -r '.committed // empty | "committed \(.); "' <<<"$SHIP_FACTS")no passing verdict for this code: run /verify, then keel ship $verb again"
+    ship_ask "no passing verdict for this code: run /verify, then keel ship $verb again"
   else
     ship_fact verify '"pass"'
   fi
@@ -1795,6 +1800,7 @@ ship_cmd() { # ship <commit|push|pr> [--files <path>...] [--message <file>] [--t
   fi
   ship_guard "$tree" git push -u origin "HEAD:$branch"
   out=$(git -C "$tree" push -q -u origin "HEAD:$branch" 2>&1) || die "git push failed: $out"
+  ship_fact pushed true
   if [[ "$verb" == push ]]; then
     jq -n --argjson f "$SHIP_FACTS" '{result: "pushed"} + $f'
     return 0

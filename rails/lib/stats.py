@@ -377,12 +377,16 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
             # means it never ran.
             if c.get("is_error") and not result_text(c.get("content")).lstrip().startswith("Exit code"):
                 continue
-            for call in RUN_CALL.finditer(command):
+            calls = list(RUN_CALL.finditer(command))
+            # keel stops at the first call it refuses, so in a refused command
+            # only its last keel run call is the one refused.
+            refused = bool(c.get("is_error")) and re.search(r"^keel: ", result_text(c.get("content")), re.M) is not None
+            for k, call in enumerate(calls):
                 started_pb, n_text, before_next, stopped = call.groups()
                 if before_next:
                     # A --next keel refused, on the last step or for a bad code,
-                    # changed nothing, and says why on a line of its own.
-                    if c.get("is_error") and re.search(r"^keel: ", result_text(c.get("content")), re.M):
+                    # changed nothing.
+                    if refused and k == len(calls) - 1:
                         continue
                     n_text = str(int(before_next) + 1)
                 # A start counts when a run folder for that playbook began while

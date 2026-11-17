@@ -641,6 +641,8 @@ eq "update --only-from on an issue in another state changes nothing and says so"
   "$(lin "$ACME" update ANB-70 --state "In Progress" --only-from Backlog,Todo)|$(sent issueUpdate)"
 lin "$ACME" update ANB-71 --state "In Progress" --only-from Backlog,Todo >/dev/null
 eq "and moves one in a state it names" "state-in-progress" "$(last | jq -r .variables.stateId)"
+refute "an empty --only-from is refused rather than moving the issue from any state" \
+  lin "$ACME" update ANB-70 --state "In Progress" --only-from ""
 refute "--only-from with --body is refused, since the body would be dropped with the move" \
   lin "$ACME" update ANB-70 --state "In Progress" --only-from Backlog,Todo --body "$T/body.md"
 eq "an ID given in lowercase is looked up uppercased" "ANB-60" "$(begin anb-60 >/dev/null; grep IssueBegin "$T/linear.log" | tail -1 | jq -r .variables.id)"
@@ -1381,6 +1383,13 @@ res=$(ks_ pr --files c.txt --message "$T/ship-msg-c" --skip-verify "trial")
 eq "with a PR already open it pushes, prints its URL and opens no other" \
   "exit 0|pushed|https://github.test/acme/app/pull/7|1|$(git -C "$SR" rev-parse HEAD)" \
   "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .pr)|$(wc -l <"$T/ship-creates")|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
+echo '[{"number":6,"state":"MERGED","url":"https://github.test/acme/app/pull/6","baseRefName":"develop"}]' >"$T/ship-prs.json"
+echo c3 >"$SR/c.txt"
+res=$(ks_ pr --files c.txt --message "$T/ship-msg-c" --skip-verify "trial" --title t --body "$T/ship-body")
+eq "a refusal after committing and pushing says both in its reason" \
+  "exit 2|committed $(git -C "$SR" rev-parse HEAD) and pushed it; feature/ship already has a closed, merged or differently based PR" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)"
+echo '[]' >"$T/ship-prs.json"
 (cd "$SR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract false)" >/dev/null)
 eq "in a contracted run --skip-verify exits 2" "a contracted run cannot skip verifying" "$(ks_ push --skip-verify x | sed '$d' | jq -r .reason)"
 echo d >"$SR/d.txt"
@@ -1553,10 +1562,12 @@ lines.append({"type": "assistant", "timestamp": at(35), "cwd": "/work/inv", "mes
 lines.append({"type": "user", "timestamp": at(36), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m3b", "is_error": True, "content": "Exit code 1\nkeel: a skipped step needs one of these codes"}]}})
 call(40, "m4", "Skill", {"skill": "mockup"})
 # Step 11 is entered by skipping step 10 with --next, its note quoting a ";",
-# and step 12 by finishing step 11 with --next.
+# and step 12 by finishing step 11 with --next, in a command whose second,
+# refused --next enters nothing.
 call(50, "m5", "Bash", {"command": "keel run step 10 skip blocked 'no browser; none here' --next"})
 call(60, "m6", "Skill", {"skill": "simplify"})
-call(90, "m7", "Bash", {"command": "keel run step 11 done --next"})
+lines.append({"type": "assistant", "timestamp": at(90), "cwd": "/work/inv", "message": {"id": "m7", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m7", "name": "Bash", "input": {"command": "keel run step 11 done --next && keel run step 12 done --next"}}]}})
+lines.append({"type": "user", "timestamp": at(91), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m7", "is_error": True, "content": "Exit code 1\nkeel: step 12 is the last, so there is no step for --next to start"}]}})
 # A --next on the last step, which keel refuses, enters no step.
 lines.append({"type": "assistant", "timestamp": at(100), "cwd": "/work/inv", "message": {"id": "m7b", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m7b", "name": "Bash", "input": {"command": "keel run step 12 done --next"}}]}})
 lines.append({"type": "user", "timestamp": at(101), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m7b", "is_error": True, "content": "Exit code 1\nkeel: step 12 is the last, so there is no step for --next to start"}]}})
