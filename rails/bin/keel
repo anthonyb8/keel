@@ -1759,11 +1759,12 @@ ship_cmd() { # ship <commit|push|pr> [--files <path>...] [--message <file>] [--t
       [[ ! -d "$f" ]] || ship_ask "--files names a directory, $f: name each file this work touched"
     done
     # Anything already staged that --files does not cover would go into the commit.
-    extra=$(git diff --cached --name-only | grep -vxF -f <(git diff --cached --name-only -- "${files[@]}" 2>/dev/null) || true)
+    extra=$(git diff --cached --name-only | grep -vxF -f <(GIT_LITERAL_PATHSPECS=1 git diff --cached --name-only -- "${files[@]}" 2>/dev/null) || true)
     [[ -z "$extra" ]] || ship_ask "files outside --files are already staged: $(paste -sd' ' <<<"$extra")"
     # Asked before staging, so a refusal leaves the index as it was.
     ship_guard "$tree" git commit -F "$message"
-    git add -- "${files[@]}" || die "git add refused: ${files[*]}"
+    # Literally, so a pathspec such as :/ or * cannot stage what was not named.
+    GIT_LITERAL_PATHSPECS=1 git add -- "${files[@]}" || die "git add refused: ${files[*]}"
     staged=$(git diff --cached --name-only)
     if [[ -n "$staged" ]]; then
       git -C "$tree" commit -q -F "$message" || die "git commit failed"

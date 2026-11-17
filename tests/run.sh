@@ -1412,6 +1412,11 @@ mkdir -p "$SR/sub" && echo f >"$SR/sub/f.txt" && printf 'Add f from sub\n\nWhy f
 res=$(cd "$SR/sub" && "$K" ship commit --files f.txt ../e.txt --message msg; echo "exit $?")
 eq "from a subdirectory, paths and the message are read from there" "exit 0|Add f from sub|e.txt sub/f.txt" \
   "$(tail -1 <<<"$res")|$(git -C "$SR" log -1 --format=%s)|$(git -C "$SR" show --name-only --format= HEAD | sort | paste -sd' ')"
+echo stray >"$SR/stray.txt"
+ship_head=$(git -C "$SR" rev-parse HEAD)
+eq "--files takes paths literally, so a pathspec such as :/ commits nothing" "exit 1|$ship_head" \
+  "$(ks_ commit --files ':/' --message "$T/ship-msg" 2>/dev/null | tail -1)|$(git -C "$SR" rev-parse HEAD)"
+rm "$SR/stray.txt"
 mkdir -p "$SR/dir" && echo g >"$SR/dir/g.txt"
 res=$(ks_ commit --files dir --message "$T/ship-msg")
 eq "a directory in --files exits 2, staging nothing" "exit 2|--files names a directory, dir: name each file this work touched|" \
@@ -1543,6 +1548,9 @@ lines.append({"type": "user", "isMeta": True, "timestamp": at(1), "cwd": "/work/
 call(5, "m1", "Skill", {"skill": "pickup"})
 call(20, "m2", "Bash", {"command": "keel run start --playbook issue --goal g --steps f"})
 call(30, "m3", "Bash", {"command": "keel run step 5 doing"})
+# A --next keel refused for its bad code enters no step.
+lines.append({"type": "assistant", "timestamp": at(35), "cwd": "/work/inv", "message": {"id": "m3b", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m3b", "name": "Bash", "input": {"command": "keel run step 5 skip bogus --next"}}]}})
+lines.append({"type": "user", "timestamp": at(36), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m3b", "is_error": True, "content": "Exit code 1\nkeel: a skipped step needs one of these codes"}]}})
 call(40, "m4", "Skill", {"skill": "mockup"})
 # Step 11 is entered by skipping step 10 with --next, its note quoting a ";",
 # and step 12 by finishing step 11 with --next.
@@ -1578,8 +1586,8 @@ eq "and a /ship you type is a run of ship, holding the work until your next mess
 eq "a skill the agent calls outside a run is an agent run, with your reply as its wait" '[1,["agent"],{"agent":1,"typed":0},1,9]' \
   "$(skill spec '[.agent_s, .how, .invoked, .runs, .wait_s]')"
 eq "each playbook step holds its own time and tokens, with what its own skill and other packs' skills spent in it, but not another skill keel installs" \
-  '[[5,1,20,20],[11,1,40,20],[12,1,49,30]]' \
-  "$(jq -c '[.playbooks[] | select(.name == "issue") | .steps[] | select(.n == 5 or .n == 11 or .n == 12) | [.n, .entered, .agent_s, .tokens.session]]' <<<"$out")"
+  '[[5,1,20,30],[6,0,0,0],[11,1,40,20],[12,1,49,30]]' \
+  "$(jq -c '[.playbooks[] | select(.name == "issue") | .steps[] | select(.n == 5 or .n == 6 or .n == 11 or .n == 12) | [.n, .entered, .agent_s, .tokens.session]]' <<<"$out")"
 rm -rf "$inv" "$SD/keel/runs/archive/-work-inv"
 
 section "dash"
