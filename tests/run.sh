@@ -1127,6 +1127,11 @@ eq "in a contracted run it runs the done check" "$(printf 'done check: echo not 
   "$(vb | sed -n '/^done check: /,/^checks/p' | sed '$d')"
 (cd "$RB" && "$K" run stop stopped >/dev/null)
 refute "it takes no arguments" bash -c "cd '$RB' && '$K' verify-brief extra"
+git -C "$RB" switch -q --orphan lone && echo lone >"$RB/lone.txt" && git -C "$RB" add lone.txt && git -C "$RB" commit -q -m lone
+res=$(cd "$RB" && "$K" verify-brief 2>&1; echo "exit $?")
+eq "a branch sharing no history with the base still gets the whole brief" "exit 0|1|1" \
+  "$(tail -1 <<<"$res")|$(grep -c 'no history shared with origin/develop' <<<"$res")|$(grep -c '^done check: none' <<<"$res")"
+git -C "$RB" switch -q feature/brief
 
 section "merge"
 # keel merge against a gh stub that answers from files under $T/gh, each case
@@ -1421,6 +1426,11 @@ mkdir -p "$SR/sub" && echo f >"$SR/sub/f.txt" && printf 'Add f from sub\n\nWhy f
 res=$(cd "$SR/sub" && "$K" ship commit --files f.txt ../e.txt --message msg; echo "exit $?")
 eq "from a subdirectory, paths and the message are read from there" "exit 0|Add f from sub|e.txt sub/f.txt" \
   "$(tail -1 <<<"$res")|$(git -C "$SR" log -1 --format=%s)|$(git -C "$SR" show --name-only --format= HEAD | sort | paste -sd' ')"
+git -C "$SR" add b.txt && git -C "$SR" commit -q -m "track b" && git -C "$SR" mv b.txt b2.txt
+ship_head=$(git -C "$SR" rev-parse HEAD)
+eq "a staged rename's deletion counts as staged outside --files" "exit 2|$ship_head" \
+  "$(ks_ commit --files b2.txt --message "$T/ship-msg" | tail -1)|$(git -C "$SR" rev-parse HEAD)"
+git -C "$SR" mv b2.txt b.txt
 echo stray >"$SR/stray.txt"
 ship_head=$(git -C "$SR" rev-parse HEAD)
 eq "--files takes paths literally, so a pathspec such as :/ commits nothing" "exit 1|$ship_head" \
@@ -1556,7 +1566,9 @@ typed(0, "pickup")
 lines.append({"type": "user", "isMeta": True, "timestamp": at(1), "cwd": "/work/inv", "message": {"content": [{"type": "text", "text": "Base directory for this skill"}]}})
 call(5, "m1", "Skill", {"skill": "pickup"})
 call(20, "m2", "Bash", {"command": "keel run start --playbook issue --goal g --steps f"})
-call(30, "m3", "Bash", {"command": "keel run step 5 doing"})
+# Step 5 is entered by a --next whose command then fails in another keel call.
+lines.append({"type": "assistant", "timestamp": at(30), "cwd": "/work/inv", "message": {"id": "m3", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m3", "name": "Bash", "input": {"command": "keel run step 4 done --next && keel verdict"}}]}})
+lines.append({"type": "user", "timestamp": at(31), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m3", "is_error": True, "content": "Exit code 1\nkeel: no verifier has judged /work/inv: run /verify"}]}})
 # A --next keel refused for its bad code enters no step.
 lines.append({"type": "assistant", "timestamp": at(35), "cwd": "/work/inv", "message": {"id": "m3b", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m3b", "name": "Bash", "input": {"command": "keel run step 5 skip bogus --next"}}]}})
 lines.append({"type": "user", "timestamp": at(36), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m3b", "is_error": True, "content": "Exit code 1\nkeel: a skipped step needs one of these codes"}]}})

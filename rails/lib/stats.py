@@ -380,7 +380,11 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
             calls = list(RUN_CALL.finditer(command))
             # keel stops at the first call it refuses, so in a refused command
             # only its last keel run call is the one refused.
-            refused = bool(c.get("is_error")) and re.search(r"^keel: ", result_text(c.get("content")), re.M) is not None
+            # A refusal belongs to a keel run call only when that call is the
+            # command's last keel call; another keel command after it may be the one that failed.
+            last_keel = max((m.start() for m in re.finditer(r"\bkeel\s+[a-z]", command)), default=-1)
+            refused = (bool(c.get("is_error")) and re.search(r"^keel: ", result_text(c.get("content")), re.M) is not None
+                       and bool(calls) and calls[-1].start() >= last_keel)
             for k, call in enumerate(calls):
                 started_pb, n_text, before_next, stopped = call.groups()
                 if before_next:
