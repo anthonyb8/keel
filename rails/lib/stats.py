@@ -380,6 +380,9 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
             for call in RUN_CALL.finditer(command):
                 started_pb, n_text, before_next, stopped = call.groups()
                 if before_next:
+                    # keel refuses --next on a run's last step, changing nothing.
+                    if "no step for --next to start" in result_text(c.get("content")):
+                        continue
                     n_text = str(int(before_next) + 1)
                 # A start counts when a run folder for that playbook began while
                 # the call ran, which also rules out a refused start and a command

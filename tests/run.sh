@@ -1549,6 +1549,9 @@ call(40, "m4", "Skill", {"skill": "mockup"})
 call(50, "m5", "Bash", {"command": "keel run step 10 skip blocked 'no browser; none here' --next"})
 call(60, "m6", "Skill", {"skill": "simplify"})
 call(90, "m7", "Bash", {"command": "keel run step 11 done --next"})
+# A --next on the last step, which keel refuses, enters no step.
+lines.append({"type": "assistant", "timestamp": at(100), "cwd": "/work/inv", "message": {"id": "m7b", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m7b", "name": "Bash", "input": {"command": "keel run step 12 done --next"}}]}})
+lines.append({"type": "user", "timestamp": at(101), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m7b", "is_error": True, "content": "Exit code 1\nkeel: step 12 is the last, so there is no step for --next to start"}]}})
 typed(120, "ship")
 lines.append({"type": "assistant", "timestamp": at(125), "cwd": "/work/inv", "message": {"id": "m8", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "text", "text": "shipping"}]}})
 typed(130, "login")
@@ -1575,7 +1578,7 @@ eq "and a /ship you type is a run of ship, holding the work until your next mess
 eq "a skill the agent calls outside a run is an agent run, with your reply as its wait" '[1,["agent"],{"agent":1,"typed":0},1,9]' \
   "$(skill spec '[.agent_s, .how, .invoked, .runs, .wait_s]')"
 eq "each playbook step holds its own time and tokens, with what its own skill and other packs' skills spent in it, but not another skill keel installs" \
-  '[[5,1,20,20],[11,1,40,20],[12,1,49,20]]' \
+  '[[5,1,20,20],[11,1,40,20],[12,1,49,30]]' \
   "$(jq -c '[.playbooks[] | select(.name == "issue") | .steps[] | select(.n == 5 or .n == 11 or .n == 12) | [.n, .entered, .agent_s, .tokens.session]]' <<<"$out")"
 rm -rf "$inv" "$SD/keel/runs/archive/-work-inv"
 
