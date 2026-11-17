@@ -1390,11 +1390,17 @@ eq "with a PR already open it pushes, prints its URL and opens no other" \
   "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .pr)|$(wc -l <"$T/ship-creates")|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
 echo '[{"number":6,"state":"MERGED","url":"https://github.test/acme/app/pull/6","baseRefName":"develop"}]' >"$T/ship-prs.json"
 echo c3 >"$SR/c.txt"
+ship_head=$(git -C "$SR" rev-parse HEAD)
 res=$(ks_ pr --files c.txt --message "$T/ship-msg-c" --skip-verify "trial" --title t --body "$T/ship-body")
-eq "a refusal after committing and pushing says both in its reason" \
-  "exit 2|committed $(git -C "$SR" rev-parse HEAD) and pushed it; feature/ship already has a closed, merged or differently based PR" \
-  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)"
+eq "pr refuses a branch whose PR is closed or merged before committing or pushing anything" \
+  "exit 2|feature/ship already has a closed, merged or differently based PR|$ship_head|$ship_head" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" rev-parse HEAD)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
 echo '[]' >"$T/ship-prs.json"
+res=$(ks_ pr --files c.txt --message "$T/ship-msg-c" --skip-verify "trial" 2>&1)
+eq "pr with no PR open and no --title or --body exits 1 before committing or pushing anything" \
+  "exit 1|$ship_head|$ship_head" \
+  "$(tail -1 <<<"$res")|$(git -C "$SR" rev-parse HEAD)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
+git -C "$SR" checkout -q -- c.txt
 (cd "$SR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract false)" >/dev/null)
 eq "in a contracted run --skip-verify exits 2" "a contracted run cannot skip verifying" "$(ks_ push --skip-verify x | sed '$d' | jq -r .reason)"
 echo d >"$SR/d.txt"

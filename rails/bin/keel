@@ -1702,7 +1702,8 @@ ship_fact() { # ship_fact <key> <json>
 
 ship_ask() { # ship_ask <reason>: hands the ship to the agent, saying first what it already did
   local why
-  why=$(jq -r --arg r "$1" '(if .committed then "committed \(.committed)\(if .pushed then " and pushed it" else "" end); " else "" end) + $r' <<<"$SHIP_FACTS")
+  why=$(jq -r --arg r "$1" '(if .committed then "committed \(.committed)\(if .pushed then " and pushed it" else "" end); "
+    elif .pushed then "pushed \(.head); " else "" end) + $r' <<<"$SHIP_FACTS")
   EVENT_REASON="$why"
   jq -n --arg r "$why" --argjson f "$SHIP_FACTS" '{result: "ask", reason: $r} + $f'
   exit 2
@@ -1756,6 +1757,25 @@ ship_cmd() { # ship <commit|push|pr> [--files <path>...] [--message <file>] [--t
   [[ "$contracted" == false || -z "$skip" ]] || ship_ask "a contracted run cannot skip verifying"
   [[ "$verb" == commit ]] || git -C "$tree" remote get-url origin >/dev/null 2>&1 || ship_ask "the repository has no origin to push to"
 
+  # For a PR, everything about it is settled before anything is committed or
+  # pushed: the base, a PR the branch already has, and the title and body.
+  if [[ "$verb" == pr ]]; then
+    base=$(base_for "$tree")
+    if [[ -z "$base" ]]; then
+      base=$(git -C "$tree" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || ship_ask "neither the pack nor origin names a base for the PR"
+      base=${base#origin/}
+    fi
+    ship_fact base "$(jq -R . <<<"$base")"
+    prs=$(cd "$tree" && gh pr list --head "$branch" --state all --json number,state,url,baseRefName) || die "gh could not list PRs from $branch"
+    ship_fact prs "$prs"
+    open=$(jq -r --arg b "$base" '[.[] | select(.state == "OPEN" and .baseRefName == $b)][0].url // empty' <<<"$prs")
+    if [[ -z "$open" ]]; then
+      [[ "$prs" == "[]" ]] || ship_ask "$branch already has a closed, merged or differently based PR"
+      [[ -n "$title" && -n "$body" ]] || die "$usage"
+      [[ -f "$body" ]] || die "no such body file: $body"
+    fi
+  fi
+
   # Commit exactly the named files, and nothing staged beside them.
   if ((${#files[@]})); then
     if grep -qi '^co-authored-by:' "$message"; then ship_ask "the message has a co-author line, which the git rules forbid"; fi
@@ -1808,22 +1828,10 @@ ship_cmd() { # ship <commit|push|pr> [--files <path>...] [--message <file>] [--t
   fi
 
   # The PR into the base: one already open is left as it is.
-  base=$(base_for "$tree")
-  if [[ -z "$base" ]]; then
-    base=$(git -C "$tree" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || ship_ask "neither the pack nor origin names a base for the PR"
-    base=${base#origin/}
-  fi
-  ship_fact base "$(jq -R . <<<"$base")"
-  prs=$(cd "$tree" && gh pr list --head "$branch" --state all --json number,state,url,baseRefName) || die "gh could not list PRs from $branch"
-  ship_fact prs "$prs"
-  open=$(jq -r --arg b "$base" '[.[] | select(.state == "OPEN" and .baseRefName == $b)][0].url // empty' <<<"$prs")
   if [[ -n "$open" ]]; then
     jq -n --argjson f "$SHIP_FACTS" --arg u "$open" '{result: "pushed", pr: $u} + $f'
     return 0
   fi
-  [[ "$prs" == "[]" ]] || ship_ask "$branch already has a closed, merged or differently based PR"
-  [[ -n "$title" && -n "$body" ]] || die "$usage"
-  [[ -f "$body" ]] || die "no such body file: $body"
   [[ "$contracted" == false ]] || draft=(--draft)
   # No --head: the push above set the branch's upstream, and git-guard refuses --head in a run.
   ship_guard "$tree" gh pr create "${draft[@]}" --base "$base" --title "$title" --body-file "$body"
