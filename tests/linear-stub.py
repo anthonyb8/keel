@@ -22,10 +22,37 @@ PROJECT_ISSUES = {
              ("ANB-12", [("blocks", "ANB-40")]), ("ANB-9", [("duplicate", "ANB-12")])],
     "loop": [("ANB-1", [("blocks", "ANB-2")]), ("ANB-2", [("blocks", "ANB-1")])],
     "teams": [("OTH-5", []), ("ANB-5", [])],
+    "P-ANB-7": [],
 }
 
 
+# Each project code Linear knows, and the project it names; P-ANB-7 is also
+# another project's name, which wins.
+PROJECT_CODES = {"P-ANB-12": "keel", "P-ANB-7": "keel"}
+# keel issue begin's issues: each one's state and the issues blocking it, each
+# blocker as (identifier, state name, state type, project).
+BEGIN_ISSUES = {
+    "ANB-12": ("Backlog", [("ANB-8", "Done", "completed", "keel")]),
+    "ANB-60": ("In Review", []),
+    "ANB-61": ("Todo", [("ANB-62", "Todo", "unstarted", "other")]),
+    "ANB-63": ("In Progress", [("ANB-62", "Todo", "unstarted", "keel")]),
+    "ANB-64": ("Triage", []),
+    "ANB-65": ("Todo", [("ANB-66", "Todo", "unstarted", "keel")]),
+}
+# Each issue's state now, for update --only-from; any other issue is in Backlog.
+STATE_NOW = {"ANB-70": "In Progress"}
+
+
 def answer(query, variables):
+    if "IssueBegin" in query:
+        if variables["id"] not in BEGIN_ISSUES:
+            return None
+        state, blockers = BEGIN_ISSUES[variables["id"]]
+        return {"issue": {"identifier": variables["id"], "branchName": "x/" + variables["id"].lower() + "-foo",
+                          "state": {"name": state}, "project": {"name": "keel"},
+                          "inverseRelations": {"nodes": [{"type": "blocks", "issue": {
+                              "identifier": i, "state": {"name": n, "type": t}, "project": {"name": p}}}
+                              for i, n, t, p in blockers]}}}
     if "issueCreate" in query:
         return {"issueCreate": {"issue": {"id": "uuid-ANB-99", "identifier": "ANB-99", "url": "https://linear.test/ANB-99"}}}
     if "issueUpdate" in query:
@@ -37,21 +64,29 @@ def answer(query, variables):
     if "projectCreate" in query or "projectUpdate" in query:
         op = "projectCreate" if "projectCreate" in query else "projectUpdate"
         return {op: {"project": {"name": variables.get("name", "keel"), "url": "https://linear.test/project/keel"}}}
-    if "projects(" in query:
-        if variables["name"] not in PROJECT_ISSUES:
+    if "projects(" in query or "project(id" in query:
+        # A project by name, or by its code, which only keel's is given here;
+        # Linear answers an unknown code with an error, as for an unknown issue.
+        name = variables["name"] if "projects(" in query else PROJECT_CODES.get(variables["id"])
+        if name is None:
+            return None
+        if name not in PROJECT_ISSUES:
             return {"projects": {"nodes": []}}
         issues = [{"identifier": i, "title": "t" + i, "state": {"name": "Todo"},
                    "inverseRelations": {"nodes": [{"type": t, "issue": {"identifier": b}} for t, b in by]}}
-                  for i, by in PROJECT_ISSUES[variables["name"]]]
-        return {"projects": {"nodes": [{"id": "project-" + variables["name"], "name": variables["name"], "description": "s",
-                                        "content": "c", "url": "u", "state": "started", "issues": {"nodes": issues}}]}}
+                  for i, by in PROJECT_ISSUES[name]]
+        project = {"id": "project-" + name, "name": name, "description": "s",
+                   "content": "c", "url": "u", "state": "started", "issues": {"nodes": issues}}
+        return {"projects": {"nodes": [project]}} if "projects(" in query else {"project": project}
     if "issues(" in query:
         return {"issues": {"nodes": [{"identifier": "ANB-31", "title": "keel skeleton", "url": "u", "state": {"name": "Todo"}}]}}
     if "teams(" in query:
         nodes = [{"id": "team-" + variables["key"]}] if variables["key"] in ("ANB", "OTH") else []
         return {"teams": {"nodes": nodes}, "organization": {"name": "Stub Org"}}
     if "states" in query:
-        return {"issue": {"team": {"states": {"nodes": [{"id": "state-todo", "name": "Todo"},
+        return {"issue": {"state": {"name": STATE_NOW.get(variables["id"], "Backlog")},
+                          "team": {"states": {"nodes": [{"id": "state-todo", "name": "Todo"},
+                                                        {"id": "state-in-progress", "name": "In Progress"},
                                                         {"id": "state-canceled", "name": "Canceled"}]}}}}
     if "issue(" in query:
         if variables["id"] == "ANB-404":

@@ -8,5 +8,5 @@ The lines above are the contract; the Stop hook reads them, and changing them mi
 Free notes go here, below the blank line: the scope, what is out, and anything the run should know.
 
 Draft it from the user's prompt and stop for their approval before starting the run: approving it is their ask for exactly what its grants cover, and nothing else.
-Start it with `keel run start --playbook <name> --goal "<goal>" --steps <file> --contract <this file>`.
+Start it with `keel run start --playbook <name> --goal "<goal>" --contract <this file>`.
 A done check that already passes is refused, since it could never tell the work is done.

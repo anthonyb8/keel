@@ -55,14 +55,17 @@ The variable is set by `keel claude` alone, never in the shell or a settings fil
   A subagent's empty tree goes back to the pool when it stops; `keel sweep --apply` catches the rest, except trees listed in `~/.config/keel/keep`.
 - **Packs.** keel reads harness's packs from `~/.config/harness/packs` (or `$KEEL_PACKS`), read-only, until packs move into their repositories.
   A session in a repository a pack owns gets the pack's rules, with a note that where they name `harness <verb>`, the session runs `keel <verb>`.
+- **Verify brief.** `keel verify-brief` prints what a verifier starts from: the base, the commits and diff stat against it, and the contract's done check and each command in the pack's `checks` file, one per line, with its exit and output tail, cached by the code it ran on so a second round reruns nothing unchanged; a tree with uncommitted files is never cached, and a check that reads state outside the tree, such as `keel verdict`, does not belong in it.
 - **Stacks.** `keel stack up` starts the tree's stack through the pack's `stack` script and prints its URL once it serves; `keel stack down` stops it.
   `keel e2e` runs browser tests against it from a container on no network but the stack's ports.
   keel's stack state lives in the tree's git dir as `keel-stack`, apart from harness's.
 - **git-guard.** A `PreToolUse` hook refuses any merge, rebase, cherry-pick or revert that would move a protected branch: the pack's base, the default branch and the pack's `protected` list, as `keel protected` prints them.
   What it cannot place, such as a git call inside `bash -c`, it refuses rather than guesses.
-- **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`, whose `order` lists a project's issues blockers first.
+- **Linear.** `keel linear` reaches any Linear workspace over its API: `team`, `get`, `search`, `create`, `update`, `comment`, `relate` and `project`, which takes a project's name or its code, such as `P-ANB-12`, and whose `order` lists its issues blockers first.
   The repository picks the workspace through `~/.config/keel/linear`, one line per origin glob: `*github.com[/:]anthonyb8/* ANB LINEAR_API_KEY_PERSONAL`, meaning the team key and the env var holding that workspace's key.
   A pack's `linear` file still names the team for the repositories it owns. The key is sent in a header file, never on a command line, and never printed.
+- **Starting an issue.** `keel issue begin [ID]` takes the ID, else the branch name's, and reads the issue's state and open blockers: it exits 0 with `go`, or 2 with `stop` or `ask` and why, counting a blocker from the same project as cleared once a commit on the branch is headed with its ID; `keel linear update <ID> --state <name> --only-from <state,...>` moves an issue only from those states.
+- **Shipping.** `/ship` writes the commit message and PR body and runs `keel ship commit|push|pr`, which commits exactly the files named, pushes only once `keel verdict` passes for HEAD unless given `--skip-verify <why>`, and opens the PR into the base, putting each git and gh command through git-guard first; anything it cannot settle exits 2 with the reason and the facts.
 - **Merges.** `/merge squash` or `/merge commit`, with an optional PR number, runs `keel merge <squash|commit> [n]`: it merges the PR, else the current branch's, with that method once the PR is ready, GitHub allows the method, and no PR from the same head goes elsewhere.
   A skipped check counts as passed, as GitHub counts a skipped required check.
   Anything else exits 2 with the reason and every fact it gathered, and `/merge` takes it to the user. git-guard refuses it inside a run.

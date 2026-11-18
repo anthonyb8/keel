@@ -588,6 +588,11 @@ eq "with each issue's state and title" "$(printf 'ANB-9\tTodo\ttANB-9')" "$(lin 
 eq "and the same number in two teams by team key" "ANB-5 OTH-5" "$(lin "$ACME" project order teams | cut -f1 | paste -sd' ')"
 err=$(lin "$ACME" project order nope 2>&1 >/dev/null)
 eq "project order on a project Linear lacks says only that" "keel: no project named nope" "$err"
+eq "project order takes the project's code too, printing the same lines" "$(lin "$ACME" project order keel)" "$(lin "$ACME" project order P-ANB-12)"
+eq "a code Linear does not know fails in one line naming it" "keel: no project named or coded P-ANB-999" "$(lin "$ACME" project get P-ANB-999 2>&1 >/dev/null)"
+lin "$ACME" project update P-ANB-12 --body "$T/body.md" >/dev/null
+eq "and project update finds the project by its code" "project-keel" "$(last | jq -r .variables.id)"
+eq "a project named like another's code is found by its name" "P-ANB-7" "$(lin "$ACME" project get P-ANB-7 | jq -r .name)"
 err=$(lin "$ACME" project order loop 2>&1 >/dev/null)
 refute "project order fails on issues that block each other" lin "$ACME" project order loop
 check "naming them" grep -q "these issues block each other: ANB-1 ANB-2" <<<"$err"
@@ -598,6 +603,66 @@ requests=$(sent)
 err=$(lin "$ACME" project update keel --summary "${long}x" 2>&1 >/dev/null)
 check "one over is refused" grep -q "Linear allows 255" <<<"$err"
 eq "before anything is sent" "$requests" "$(sent)"
+
+# keel issue begin, from a branch named for ANB-12 in a project build whose
+# branch already holds a commit headed ANB-62.
+IB="$T/work/acme/begin"
+git clone -q "$T/remotes/acme/app" "$IB"
+git -C "$IB" switch -q -c x/anb-12-foo
+git -C "$IB" commit -q --allow-empty -m "ANB-62 Build the blocker"
+begin() { (cd "$IB" && "$K" issue begin "$@"; echo "exit $?"); }
+said() { sed '$d' <<<"$1" | jq -r "$2"; }
+res=$(begin)
+eq "with no ID it takes the branch name's, and goes on from Backlog past a blocker that is done" \
+  "exit 0|go|ANB-12|x/anb-12-foo|Backlog" "$(tail -1 <<<"$res")|$(said "$res" '[.result, .id, .branchName, .state] | join("|")')"
+res=$(begin ANB-60)
+eq "an issue In Review exits 2 with stop" "exit 2|stop|ANB-60 is In Review" "$(tail -1 <<<"$res")|$(said "$res" '[.result, .reason] | join("|")')"
+res=$(begin ANB-61)
+eq "an open blocker from another project exits 2 with ask, naming it" "exit 2|ask|ANB-61 is blocked by ANB-62, still open" \
+  "$(tail -1 <<<"$res")|$(said "$res" '[.result, .reason] | join("|")')"
+res=$(begin ANB-63)
+eq "from In Progress, one from the same project with a commit on this branch counts as cleared" "exit 0|go|In Progress|true" \
+  "$(tail -1 <<<"$res")|$(said "$res" '[.result, .state, (.blockers[0].cleared | tostring)] | join("|")')"
+eq "and the call is logged" '["issue begin",["begin","ANB-63"],0]' "$(tail -1 "$HOME/.local/state/keel/events.jsonl" | jq -c '[.cmd, .args, .exit]')"
+res=$(begin ANB-65)
+eq "but one from the same project with no commit on this branch is still open" "exit 2|ask|ANB-65 is blocked by ANB-66, still open" \
+  "$(tail -1 <<<"$res")|$(said "$res" '[.result, .reason] | join("|")')"
+res=$(begin ANB-64)
+eq "a state that is neither go nor stop exits 2 with ask" "exit 2|ask" "$(tail -1 <<<"$res")|$(said "$res" .result)"
+git -C "$IB" switch -q -c no-issue-here
+asked=$(sent IssueBegin)
+res=$(begin)
+eq "with neither an ID nor one in the branch name it exits 2 asking for the ID" "exit 2|ask" "$(tail -1 <<<"$res")|$(said "$res" .result)"
+eq "and sends nothing to Linear" "$asked" "$(sent IssueBegin)"
+eq "Linear without the issue exits 1" "exit 1" "$(begin ANB-404 2>/dev/null | tail -1)"
+updates=$(sent issueUpdate)
+eq "update --only-from on an issue in another state changes nothing and says so" \
+  "ANB-70 In Progress (unchanged: only from Backlog, Todo)|$updates" \
+  "$(lin "$ACME" update ANB-70 --state "In Progress" --only-from Backlog,Todo)|$(sent issueUpdate)"
+lin "$ACME" update ANB-71 --state "In Progress" --only-from Backlog,Todo >/dev/null
+eq "and moves one in a state it names" "state-in-progress" "$(last | jq -r .variables.stateId)"
+refute "an empty --only-from is refused rather than moving the issue from any state" \
+  lin "$ACME" update ANB-70 --state "In Progress" --only-from ""
+refute "--only-from with --body is refused, since the body would be dropped with the move" \
+  lin "$ACME" update ANB-70 --state "In Progress" --only-from Backlog,Todo --body "$T/body.md"
+eq "an ID given in lowercase is looked up uppercased" "ANB-60" "$(begin anb-60 >/dev/null; grep IssueBegin "$T/linear.log" | tail -1 | jq -r .variables.id)"
+
+# Every script a step calls logs each call; an unwritable log changes nothing.
+EVL="$HOME/.local/state/keel/events.jsonl"
+logged_calls() { # each read-only logged call's output and exit, from $ACME
+  local c
+  for c in "linear get ANB-31" "verdict" "stack status"; do
+    # shellcheck disable=SC2086 # each call is split into its words on purpose
+    (cd "$ACME" && $K $c 2>&1; echo "exit $?")
+  done
+}
+ev_before=$(logged_calls)
+eq "linear, verdict and stack each log their command, arguments and exit" \
+  '[["linear get",["get","ANB-31"],0],["verdict",[],1],["stack status",["status"],1]]' \
+  "$(tail -3 "$EVL" | jq -sc 'map([.cmd, .args, .exit])')"
+mv "$EVL" "$T/events.saved" && mkdir "$EVL"
+eq "with events.jsonl unwritable, each call's output and exit are as they were" "$ev_before" "$(logged_calls)"
+rmdir "$EVL" && mv "$T/events.saved" "$EVL"
 
 check "every request went through curl's argument log" test "$(grep -c . "$T/curl-args")" -eq "$(sent)"
 check "the key never appears in any output, error, request body or curl command line" \
@@ -744,6 +809,32 @@ eq "a skip with a code and no note has a null reason" '["blocked",null]' "$(jq -
 (cd "$R2" && "$K" run start --playbook no-such-playbook --goal g --steps "$T/steps.md" >/dev/null)
 eq "a run for a playbook with no file records a null hash" "null" "$(jq -r .playbook_hash "$f")"
 (cd "$R2" && "$K" run stop stopped >/dev/null)
+
+# Steps from the playbook itself, and --next, in a tree of their own.
+create RN "$ACME" feature/run-next
+in_rn() { (cd "$RN" && "$K" "$@"); }
+stn() { (cd "$RN" && "$K" status --json .) | jq -rc "$1"; }
+in_rn run start --playbook issue --goal g >/dev/null
+eq "without --steps a run records its playbook's numbered steps word for word" \
+  "$(sed -nE 's/^[0-9]+\.[[:space:]]+//p' "$ROOT/method/playbooks/issue.md" | jq -Rsc 'split("\n")[:-1]')" "$(stn '[.[0].steps[].title]')"
+in_rn run step 3 doing
+in_rn run step 3 "done" --next
+eq "done --next closes the step and starts the next in one call" '[3,"done","doing",4]' \
+  "$(stn '.[0] | [3, .steps[2].state, .steps[3].state, .current]')"
+in_rn run step 4 skip blocked 'no "browser"; here' --next
+eq "and so does a skip, keeping its code and note" '["skipped","blocked","no \"browser\"; here","doing",5]' \
+  "$(stn '.[0] | [.steps[3].state, .steps[3].skip_code, .steps[3].reason, .steps[4].state, .current]')"
+last_step=$(stn '.[0].steps | length')
+st_before=$(cat "$(in_rn run dir)/status.json")
+err=$(in_rn run step "$last_step" "done" --next 2>&1)
+check "--next on the last step is refused with why" grep -q "is the last, so there is no step for --next to start" <<<"$err"
+eq "changing nothing" "$st_before" "$(cat "$(in_rn run dir)/status.json")"
+check "--next after doing is refused, by its own check" grep -qF "follows done or skip, not doing" <<<"$(in_rn run step 6 doing --next 2>&1)"
+: >"$T/empty-steps.md"
+check "a playbook with no file needs --steps" grep -q "no playbook named no-such: give its steps with --steps" <<<"$(in_rn run start --playbook no-such --goal g --replace 2>&1)"
+refute "a replacing run with no steps is refused" in_rn run start --playbook bug-fix --goal g --steps "$T/empty-steps.md" --replace
+eq "before the run it would replace is archived" "issue active" "$(stn '.[0] | "\(.playbook) \(.state)"')"
+in_rn run stop stopped >/dev/null
 
 section "contracts"
 create R3 "$ACME" feature/run-3
@@ -985,11 +1076,62 @@ handback keel-verifier "Looked at it, seems fine."
 eq "and a handback with no VERDICT line records fail" "fail" "$(vd | head -1)"
 handback keel-agent $'VERDICT: pass'
 eq "only a keel-verifier's handback is recorded" "fail" "$(vd | head -1)"
+category() { jq -sr --arg p "$GR" '[.[] | select(.path == $p)] | last | .category' "$VH"; }
+verifier_says $'VERDICT: fail\nCATEGORY: behaviour\nthe parser drops the last row'
+eq "a fail records the category its verifier named in the history, not in the findings" "behaviour|the parser drops the last row" \
+  "$(category)|$(cd "$GR" && "$K" verdict --json | jq -r .findings)"
+verifier_says $'VERDICT: fail\nCATEGORY: vibes\nit felt off'
+eq "a category it does not know records unknown" "unknown" "$(category)"
+verifier_says $'VERDICT: fail\nthe parser drops the last row'
+eq "and so does a fail that names none" "unknown" "$(category)"
+verifier_says $'VERDICT: pass\nCATEGORY: lint'
+eq "a pass records no category, and is still a pass" "null pass" "$(category) $(vd | head -1)"
 verifier_says $'VERDICT: pass'
 verifier_says ""
 eq "a verifier that ends with no text and hands nothing back records fail" "fail" "$(vd | head -1)"
 verifier_says $'VERDICT: passed with caveats'
 eq "a VERDICT line that is not exactly pass or fail records fail" "fail" "$(vd | head -1)"
+
+section "verify-brief"
+# A tree one commit ahead of the pack's base, with a pack check that counts its
+# own runs, and one that fails.
+create RB "$ACME" feature/brief
+echo brief >"$RB/brief.txt" && git -C "$RB" add brief.txt && git -C "$RB" commit -q -m "add the brief file"
+printf '# checks\necho ran >>%s; echo all good\n\nexit 3\n' "$T/brief-runs" >"$PACK/checks"
+vb() { (cd "$RB" && "$K" verify-brief); }
+out=$(vb)
+eq "it prints the base, the commits on top of it and their diff stat" \
+  "$(printf 'base: develop\ncommits (origin/develop..HEAD):\n  add the brief file\n  brief.txt')" \
+  "$(grep -E '^base:|^commits|add the brief file$|brief\.txt' <<<"$out" | sed -E 's/^  [0-9a-f]{7,} /  /; s/^ +(brief\.txt).*/  \1/')"
+eq "and each pack check's command, exit and output" "$(printf 'check: echo ran >>%s; echo all good\n  exit 0, ran now\n  all good\ncheck: exit 3\n  exit 3, ran now' "$T/brief-runs")" \
+  "$(sed -n '/^check: /,$p' <<<"$out")"
+eq "with no run, it says there is no done check" "done check: none" "$(grep '^done check' <<<"$out")"
+eq "and logs its call" '["verify-brief",0]' "$(tail -1 "$HOME/.local/state/keel/events.jsonl" | jq -c '[.cmd, .exit]')"
+out=$(vb)
+eq "a second call on the same code reuses each result and says so, running nothing" "2 1" \
+  "$(grep -c 'cached from .* on this code' <<<"$out") $(wc -l <"$T/brief-runs")"
+check "with the same output" grep -qx '  all good' <<<"$out"
+echo wip >"$RB/wip.txt"
+out=$(vb)
+check "uncommitted files are listed" grep -qx '  ?? wip.txt' <<<"$out"
+eq "and with them nothing is cached, since the code key does not cover them" "0 2" \
+  "$(grep -c 'cached from' <<<"$out") $(wc -l <"$T/brief-runs")"
+rm "$RB/wip.txt"
+echo more >>"$RB/brief.txt" && git -C "$RB" commit -q -am "change the brief file"
+out=$(vb)
+eq "a new commit is new code, so every check runs again" "0 3" \
+  "$(grep -c 'cached from' <<<"$out") $(wc -l <"$T/brief-runs")"
+rm "$PACK/checks"
+(cd "$RB" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract 'echo not yet; exit 4')" >/dev/null)
+eq "in a contracted run it runs the done check" "$(printf 'done check: echo not yet; exit 4\n  exit 4, ran now\n  not yet')" \
+  "$(vb | sed -n '/^done check: /,/^checks/p' | sed '$d')"
+(cd "$RB" && "$K" run stop stopped >/dev/null)
+refute "it takes no arguments" bash -c "cd '$RB' && '$K' verify-brief extra"
+git -C "$RB" switch -q --orphan lone && echo lone >"$RB/lone.txt" && git -C "$RB" add lone.txt && git -C "$RB" commit -q -m lone
+res=$(cd "$RB" && "$K" verify-brief 2>&1; echo "exit $?")
+eq "a branch sharing no history with the base still gets the whole brief" "exit 0|1|1" \
+  "$(tail -1 <<<"$res")|$(grep -c 'no history shared with origin/develop' <<<"$res")|$(grep -c '^done check: none' <<<"$res")"
+git -C "$RB" switch -q feature/brief
 
 section "merge"
 # keel merge against a gh stub that answers from files under $T/gh, each case
@@ -1164,6 +1306,9 @@ km squash 12 >/dev/null
 eq "a merge that broke logs exit 1 with its error" '[1,true]' "$(ev '[.exit, (.reason | startswith("gh refused the merge"))]')"
 mreset
 (cd "$MR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null && "$K" run step 2 doing)
+eq "keel run logs each call with its arguments, flags included, and the run's step after it" \
+  '[["run start",["start","--playbook","issue","--goal","g","--steps","'"$T"'/steps.md"],0,"issue",null],["run step",["step","2","doing"],0,"issue",2]]' \
+  "$(tail -2 "$EV" | jq -sc 'map([.cmd, .args, .exit, .playbook, .step])')"
 km squash 12 >/dev/null
 eq "inside a run it records the run's playbook and step" '["issue",2]' "$(ev '[.playbook, .step]')"
 (cd "$MR" && "$K" run stop stopped >/dev/null)
@@ -1173,6 +1318,134 @@ mv "$EV" "$T/events.saved" && mkdir "$EV"
 res=$(km squash 12)
 eq "a line it cannot write leaves keel merge's exit and output as they were" "2 a check is still pending" "$(tail -1 <<<"$res") $(sed '$d' <<<"$res" | jq -r .reason)"
 rmdir "$EV" && mv "$T/events.saved" "$EV"
+rm -f "$T/stubs/gh"
+
+section "ship"
+# keel ship against a clone of acme's remote and a gh stub that lists the PRs
+# in $T/ship-prs.json and logs each pr create.
+SR="$T/work/acme/ship"
+git clone -q "$T/remotes/acme/app" "$SR"
+cat >"$T/stubs/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+"pr list") cat "$T/ship-prs.json" ;;
+"pr create") printf '%s\n' "$*" >>"$T/ship-creates"; echo "https://github.test/acme/app/pull/7" ;;
+*) echo "gh stub: unexpected $*" >&2; exit 9 ;;
+esac
+STUB
+chmod +x "$T/stubs/gh"
+echo '[]' >"$T/ship-prs.json"
+ks_() { (cd "$SR" && "$K" ship "$@"; echo "exit $?"); }
+shipped() { sed '$d' <<<"$1" | jq -r "$2"; }
+printf 'Add a\n\nWhy a.\n' >"$T/ship-msg"
+echo a >"$SR/a.txt" && echo b >"$SR/b.txt"
+git -C "$SR" switch -q develop
+ship_head=$(git -C "$SR" rev-parse HEAD)
+res=$(ks_ commit --files a.txt --message "$T/ship-msg")
+eq "on a protected branch it exits 2 and changes nothing" "exit 2|develop is protected: nothing ships from it|$ship_head|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" rev-parse HEAD)|$(git -C "$SR" diff --cached --name-only)"
+git -C "$SR" switch -q -c feature/ship
+res=$(ks_ commit --files a.txt --message "$T/ship-msg")
+eq "commit commits exactly the named files with the message" "exit 0|committed|a.txt|Add a|?? b.txt" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(git -C "$SR" show --name-only --format= HEAD)|$(git -C "$SR" log -1 --format=%s)|$(git -C "$SR" status --short)"
+echo a2 >"$SR/a.txt" && git -C "$SR" add b.txt
+res=$(ks_ commit --files a.txt --message "$T/ship-msg")
+eq "a file staged outside --files stops it before anything is committed" "exit 2|files outside --files are already staged: b.txt|Add a|A  b.txt" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" log -1 --format=%s)|$(git -C "$SR" status --short | grep b.txt)"
+git -C "$SR" restore --staged b.txt
+printf 'Add a2\n\nWhy.\n\nCo-authored-by: Someone <s@example.com>\n' >"$T/ship-coauthor"
+res=$(ks_ commit --files a.txt --message "$T/ship-coauthor")
+eq "a message with a co-author line exits 2, committing nothing" \
+  "exit 2|the message has a co-author line, which the git rules forbid|Add a" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" log -1 --format=%s)"
+res=$(ks_ push --files a.txt --message "$T/ship-msg")
+eq "push commits, then exits 2 without a passing verdict, naming what it committed and pushing nothing" \
+  "exit 2|committed $(git -C "$SR" rev-parse HEAD); no passing verdict for this code: run /verify, then keel ship push again|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" ls-remote origin feature/ship)"
+# A failed verdict for this code, which keel verdict reports over several lines.
+jq -n --arg c "$SR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"s0",agent_type:"keel-verifier",last_assistant_message:"VERDICT: fail\nthe total is wrong"}' | $K hook subagent-stop
+res=$(ks_ push)
+eq "after a failed verdict it exits 2 with the reason and the verdict's findings" "exit 2|no passing verdict for this code: run /verify, then keel ship push again|true" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(shipped "$res" '.verdict | contains("the total is wrong")')"
+res=$(ks_ push --skip-verify "docs only")
+eq "--skip-verify pushes and names the skip" "exit 0|pushed|skipped: docs only|$(git -C "$SR" rev-parse HEAD)" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .verify)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
+res=$(ks_ push --skip-verify again)
+eq "with nothing new, push exits 2" "exit 2|nothing to push: origin/feature/ship is already at HEAD" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)"
+echo c >"$SR/c.txt"
+printf 'Add c\n\nWhy c.\n' >"$T/ship-msg-c"
+ks_ commit --files c.txt --message "$T/ship-msg-c" >/dev/null
+jq -n --arg c "$SR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"s1",agent_type:"keel-verifier",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
+printf 'The body.\n' >"$T/ship-body"
+res=$(ks_ pr --title "Ship things" --body "$T/ship-body")
+eq "pr, with a pass for this code, pushes and opens the PR into the base" \
+  "exit 0|opened|pass|https://github.test/acme/app/pull/7|$(git -C "$SR" rev-parse HEAD)|pr create --base develop --title Ship things --body-file $T/ship-body" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .verify)|$(shipped "$res" .pr)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)|$(cat "$T/ship-creates")"
+echo '[{"number":7,"state":"OPEN","url":"https://github.test/acme/app/pull/7","baseRefName":"develop"}]' >"$T/ship-prs.json"
+echo c2 >"$SR/c.txt"
+res=$(ks_ pr --files c.txt --message "$T/ship-msg-c" --skip-verify "trial")
+eq "with a PR already open it pushes, prints its URL and opens no other" \
+  "exit 0|pushed|https://github.test/acme/app/pull/7|1|$(git -C "$SR" rev-parse HEAD)" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(shipped "$res" .pr)|$(wc -l <"$T/ship-creates")|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
+echo '[{"number":6,"state":"MERGED","url":"https://github.test/acme/app/pull/6","baseRefName":"develop"}]' >"$T/ship-prs.json"
+echo c3 >"$SR/c.txt"
+ship_head=$(git -C "$SR" rev-parse HEAD)
+res=$(ks_ pr --files c.txt --message "$T/ship-msg-c" --skip-verify "trial" --title t --body "$T/ship-body")
+eq "pr refuses a branch whose PR is closed or merged before committing or pushing anything" \
+  "exit 2|feature/ship already has a closed, merged or differently based PR|$ship_head|$ship_head" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" rev-parse HEAD)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
+echo '[]' >"$T/ship-prs.json"
+res=$(ks_ pr --files c.txt --message "$T/ship-msg-c" --skip-verify "trial" 2>&1)
+eq "pr with no PR open and no --title or --body exits 1 before committing or pushing anything" \
+  "exit 1|$ship_head|$ship_head" \
+  "$(tail -1 <<<"$res")|$(git -C "$SR" rev-parse HEAD)|$(git -C "$SR" ls-remote origin feature/ship | cut -f1)"
+git -C "$SR" checkout -q -- c.txt
+(cd "$SR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$(contract false)" >/dev/null)
+eq "in a contracted run --skip-verify exits 2" "a contracted run cannot skip verifying" "$(ks_ push --skip-verify x | sed '$d' | jq -r .reason)"
+echo d >"$SR/d.txt"
+printf 'Add d\n\nWhy d.\n' >"$T/ship-msg-d"
+eq "the run's grants let a commit through" "committed" "$(ks_ commit --files d.txt --message "$T/ship-msg-d" | sed '$d' | jq -r .result)"
+jq -n --arg c "$SR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"s2",agent_type:"keel-verifier",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
+check "but git-guard refuses what they leave out, here a push" \
+  grep -q '^git-guard refused `git push -u origin HEAD:feature/ship`: .*grant' <<<"$(ks_ push | sed '$d' | jq -r .reason)"
+eq "it logs each call by its verb" '["ship push",2]' "$(tail -1 "$HOME/.local/state/keel/events.jsonl" | jq -c '[.cmd, .exit]')"
+(cd "$SR" && "$K" run stop stopped >/dev/null)
+# A run granting a draft PR: the PR opens as a draft, with no --head, which git-guard refuses in a run.
+echo '[]' >"$T/ship-prs.json"
+printf 'goal: g\ndone: false\ngrants: commit, push, draft-pr\n\nNotes.\n' >"$T/ship-pr-contract.md"
+(cd "$SR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$T/ship-pr-contract.md" >/dev/null)
+jq -n --arg c "$SR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"s3",agent_type:"keel-verifier",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
+res=$(ks_ pr --title "Ship things" --body "$T/ship-body")
+eq "in a run granting it, pr opens a draft PR that git-guard lets through" \
+  "exit 0|opened|pr create --draft --base develop --title Ship things --body-file $T/ship-body" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .result)|$(tail -1 "$T/ship-creates")"
+(cd "$SR" && "$K" run stop stopped >/dev/null)
+printf 'goal: g\ndone: false\ngrants: none\n\nNotes.\n' >"$T/ship-none-contract.md"
+(cd "$SR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" --contract "$T/ship-none-contract.md" >/dev/null)
+echo e >"$SR/e.txt"
+res=$(ks_ commit --files e.txt --message "$T/ship-msg")
+eq "a commit git-guard refuses exits 2 and leaves nothing staged" "exit 2|true|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" '.reason | startswith("git-guard refused `git commit")')|$(git -C "$SR" diff --cached --name-only)"
+(cd "$SR" && "$K" run stop stopped >/dev/null)
+mkdir -p "$SR/sub" && echo f >"$SR/sub/f.txt" && printf 'Add f from sub\n\nWhy f.\n' >"$SR/sub/msg"
+res=$(cd "$SR/sub" && "$K" ship commit --files f.txt ../e.txt --message msg; echo "exit $?")
+eq "from a subdirectory, paths and the message are read from there" "exit 0|Add f from sub|e.txt sub/f.txt" \
+  "$(tail -1 <<<"$res")|$(git -C "$SR" log -1 --format=%s)|$(git -C "$SR" show --name-only --format= HEAD | sort | paste -sd' ')"
+git -C "$SR" add b.txt && git -C "$SR" commit -q -m "track b" && git -C "$SR" mv b.txt b2.txt
+ship_head=$(git -C "$SR" rev-parse HEAD)
+eq "a staged rename's deletion counts as staged outside --files" "exit 2|$ship_head" \
+  "$(ks_ commit --files b2.txt --message "$T/ship-msg" | tail -1)|$(git -C "$SR" rev-parse HEAD)"
+git -C "$SR" mv b2.txt b.txt
+echo stray >"$SR/stray.txt"
+ship_head=$(git -C "$SR" rev-parse HEAD)
+eq "--files takes paths literally, so a pathspec such as :/ commits nothing" "exit 1|$ship_head" \
+  "$(ks_ commit --files ':/' --message "$T/ship-msg" 2>/dev/null | tail -1)|$(git -C "$SR" rev-parse HEAD)"
+rm "$SR/stray.txt"
+mkdir -p "$SR/dir" && echo g >"$SR/dir/g.txt"
+res=$(ks_ commit --files dir --message "$T/ship-msg")
+eq "a directory in --files exits 2, staging nothing" "exit 2|--files names a directory, dir: name each file this work touched|" \
+  "$(tail -1 <<<"$res")|$(shipped "$res" .reason)|$(git -C "$SR" diff --cached --name-only)"
 rm -f "$T/stubs/gh"
 
 section "stats"
@@ -1194,17 +1467,31 @@ eq "a verifier's spawns are /verify's runs, with their time, tokens, models and 
 eq "a skill's step gets its time, the user's wait and its subagents' tokens" \
   '[150,1,{"session":440,"subagents":1000},{"keel-agent":1},600]' \
   "$(skill audit-code '[.agent_s, .runs, .tokens, .subagents, .wait_s]')"
+# Each session message is 3 input, 7 cache write, 90 cache read and 10 output;
+# the keel-agent's one message is 100, 200, 300 and 400.
+eq "a skill's tokens split by kind across its session and subagents, with a turn per message in each" \
+  '[{"cache_read":660,"cache_write":228,"input":112,"output":440},{"session":4,"subagents":1}]' \
+  "$(skill audit-code '[.tokens_by_kind, .turns]')"
+eq "a verifier's tokens by kind and turns are /verify's, in subagents" \
+  '[{"cache_read":0,"cache_write":0,"input":0,"output":5000},{"session":0,"subagents":2}]' \
+  "$(skill verify '[.tokens_by_kind, .turns]')"
 eq "a step naming no skill counts as the playbook's step, with going back to it a rerun" '[145,4,1,2]' \
   "$(skill "bug-fix step 1" '[.agent_s, .calls, .reruns, .runs]')"
 # m2's second line falls after its own `step 1 doing`, so a lost dedup shows in step 1, not the router.
 eq "a message split over two lines counts its tokens once" "440" "$(skill "bug-fix step 1" '.tokens.session')"
-eq "a run's step carries its own tokens, its subagents' included" '{"session":440,"subagents":1000}' \
-  "$(jq -cS '.playbooks[0].steps[4].tokens' <<<"$out")"
+eq "a run's step carries its own tokens and turns, its subagents' included" \
+  '[{"session":440,"subagents":1000},{"cache_read":660,"cache_write":228,"input":112,"output":440},{"session":4,"subagents":1}]' \
+  "$(jq -cS '.playbooks[0].steps[4] | [.tokens, .tokens_by_kind, .turns]' <<<"$out")"
 eq "a run's steps carry their attempts, attempt time and skip codes" '[2,145,1,{"already-done":1}]' \
   "$(jq -c '.playbooks[0].steps | [.[0].attempts, .[0].attempt_s, .[0].rerun_runs, .[1].skip_codes]' <<<"$out")"
 eq "scripts are counted from events.jsonl, with what they handed back" '[2,{"0":1,"2":1},[["a check is still pending",1]]]' \
   "$(jq -c '.scripts[0] | [.calls, .exits, .handed_back]' <<<"$out")"
-eq "and the verifier's first-pass rate from the decision logs" '{"first_pass":0,"rounds_to_pass":{"2":1},"verified_runs":1}' "$(jq -cS .verifier <<<"$out")"
+# verdicts.jsonl holds a behaviour fail in the run, recorded the day after the
+# run started, one recorded before fails had a category, and a lint fail outside
+# any run that day.
+eq "and the verifier's first-pass rate from the decision logs, with fails by category from the history" \
+  '{"fail_categories":{"behaviour":1,"lint":1},"first_pass":0,"rounds_to_pass":{"2":1},"verified_runs":1}' "$(jq -cS .verifier <<<"$out")"
+eq "a fail in a run is dated by the run's start, as the run is" '{"lint":1}' "$(ks --json --since 2026-11-11 | jq -cS .verifier.fail_categories)"
 eq "a line it cannot parse is counted, and the rest of the file still counts" '{"lines":31,"share":0.0323,"unread":1}' "$(jq -cS .unread <<<"$out")"
 eq "a run start the user denied counts no run; only the one keel says started does" "1" "$(skill router '.runs')"
 check "no message text reaches the output" bash -c "! grep -q 'fix the cart' <<<'$out'"
@@ -1218,6 +1505,9 @@ eq "--since leaves out runs and steps from before that day" '[[],[],["2026-11-11
 eq "--repo keeps only trees with that name in their path" '[0,4]' \
   "$(jq -cn --argjson a "$(ks --json --repo other)" --argjson b "$(ks --json --repo app)" '[($a.skills | length), ($b.skills | length)]')"
 check "without --json it prints a table of skills" grep -qE '^verify +2 ' <<<"$(ks)"
+# verify's two runs make turns per run differ from its turns.
+check "with each skill's cache-read share and turns per run" bash -c \
+  'grep -qE "^audit-code .* 46% +5\.0 " <<<"$1" && grep -qE "^verify +2 .* 0% +1\.0 " <<<"$1"' _ "$(ks)"
 # The same session again in another repository, its run started the day
 # before, with three lines whose fields cannot be read.
 late="$HOME/.keel/claude/projects/-work-late"
@@ -1282,11 +1572,23 @@ typed(0, "pickup")
 lines.append({"type": "user", "isMeta": True, "timestamp": at(1), "cwd": "/work/inv", "message": {"content": [{"type": "text", "text": "Base directory for this skill"}]}})
 call(5, "m1", "Skill", {"skill": "pickup"})
 call(20, "m2", "Bash", {"command": "keel run start --playbook issue --goal g --steps f"})
-call(30, "m3", "Bash", {"command": "keel run step 5 doing"})
+# Step 5 is entered by a --next whose command then fails in another keel call.
+lines.append({"type": "assistant", "timestamp": at(30), "cwd": "/work/inv", "message": {"id": "m3", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m3", "name": "Bash", "input": {"command": "keel run step 4 done --next && keel verdict"}}]}})
+lines.append({"type": "user", "timestamp": at(31), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m3", "is_error": True, "content": "Exit code 1\nkeel: no verifier has judged /work/inv: run /verify"}]}})
+# A --next keel refused for its bad code enters no step.
+lines.append({"type": "assistant", "timestamp": at(35), "cwd": "/work/inv", "message": {"id": "m3b", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m3b", "name": "Bash", "input": {"command": "keel run step 5 skip bogus --next"}}]}})
+lines.append({"type": "user", "timestamp": at(36), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m3b", "is_error": True, "content": "Exit code 1\nkeel: a skipped step needs one of these codes"}]}})
 call(40, "m4", "Skill", {"skill": "mockup"})
-call(50, "m5", "Bash", {"command": "keel run step 11 doing"})
+# Step 11 is entered by skipping step 10 with --next, its note quoting a ";",
+# and step 12 by finishing step 11 with --next, in a command whose second,
+# refused --next enters nothing.
+call(50, "m5", "Bash", {"command": "keel run step 10 skip blocked 'no browser; none here' --next"})
 call(60, "m6", "Skill", {"skill": "simplify"})
-call(90, "m7", "Bash", {"command": "keel run step 12 doing"})
+lines.append({"type": "assistant", "timestamp": at(90), "cwd": "/work/inv", "message": {"id": "m7", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m7", "name": "Bash", "input": {"command": "keel run step 11 done --next && keel run step 12 done --next"}}]}})
+lines.append({"type": "user", "timestamp": at(91), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m7", "is_error": True, "content": "Exit code 1\nkeel: step 12 is the last, so there is no step for --next to start"}]}})
+# A --next on the last step, which keel refuses, enters no step.
+lines.append({"type": "assistant", "timestamp": at(100), "cwd": "/work/inv", "message": {"id": "m7b", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "tool_use", "id": "m7b", "name": "Bash", "input": {"command": "keel run step 12 done --next"}}]}})
+lines.append({"type": "user", "timestamp": at(101), "cwd": "/work/inv", "message": {"content": [{"type": "tool_result", "tool_use_id": "m7b", "is_error": True, "content": "Exit code 1\nkeel: step 12 is the last, so there is no step for --next to start"}]}})
 typed(120, "ship")
 lines.append({"type": "assistant", "timestamp": at(125), "cwd": "/work/inv", "message": {"id": "m8", "model": "claude-opus-5-5", "usage": {"output_tokens": 10}, "content": [{"type": "text", "text": "shipping"}]}})
 typed(130, "login")
@@ -1313,8 +1615,8 @@ eq "and a /ship you type is a run of ship, holding the work until your next mess
 eq "a skill the agent calls outside a run is an agent run, with your reply as its wait" '[1,["agent"],{"agent":1,"typed":0},1,9]' \
   "$(skill spec '[.agent_s, .how, .invoked, .runs, .wait_s]')"
 eq "each playbook step holds its own time and tokens, with what its own skill and other packs' skills spent in it, but not another skill keel installs" \
-  '[[5,1,20,20],[11,1,40,20],[12,1,49,20]]' \
-  "$(jq -c '[.playbooks[] | select(.name == "issue") | .steps[] | select(.n == 5 or .n == 11 or .n == 12) | [.n, .entered, .agent_s, .tokens.session]]' <<<"$out")"
+  '[[5,1,20,30],[6,0,0,0],[11,1,40,20],[12,1,49,30]]' \
+  "$(jq -c '[.playbooks[] | select(.name == "issue") | .steps[] | select(.n == 5 or .n == 6 or .n == 11 or .n == 12) | [.n, .entered, .agent_s, .tokens.session]]' <<<"$out")"
 rm -rf "$inv" "$SD/keel/runs/archive/-work-inv"
 
 section "dash"

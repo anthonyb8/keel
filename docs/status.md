@@ -42,8 +42,8 @@ An archived run also has `ended_at` and `note`.
 
 ## Commands
 
-- `keel run start --playbook <name> --goal <text> --steps <file> [--replace]` starts a run in the current tree. It refuses when an active or paused run holds the tree, unless `--replace`, which archives the old one as `stopped`.
-- `keel run step <n> doing|done|skip <code> [note]` moves a step on, and resumes a paused run. A skip takes one of four codes, `not-applicable`, `already-done`, `user-said` or `blocked`, and any other is refused with the four listed.
+- `keel run start --playbook <name> --goal <text> [--steps <file>] [--replace]` starts a run in the current tree, with the playbook's numbered steps, word for word, read from the same version of the file its hash is taken from; `--steps <file>`, one step per line, gives them instead, as for a task no playbook fits. It refuses when an active or paused run holds the tree, unless `--replace`, which archives the old one as `stopped`.
+- `keel run step <n> doing|done|skip <code> [note] [--next]` moves a step on, and resumes a paused run; `--next` after `done` or a skip also starts step n+1 in the same update, and on the last step it is refused, changing nothing. A skip takes one of four codes, `not-applicable`, `already-done`, `user-said` or `blocked`, and any other is refused with the four listed.
 - `keel run pause` pauses the run; a resume note on stdin is kept in its folder as `resume.md`.
 - `keel run stop done|stopped|failed [--note <text>] [--tree <path>]` ends the run and archives it.
 
@@ -53,15 +53,17 @@ Every `keel-verifier`'s verdict is recorded for its tree, run or no run, in `~/.
 A verifier that hands its report back through a SubagentHandback call has it recorded by the PostToolUse hook on that call, with `handback` the verifier's agent id; any other verifier has it recorded from its last message by the SubagentStop hook, with `handback` empty.
 `keel verdict` in a tree prints the last one and passes only when it is a pass on the code at HEAD; `keel verdict --json` prints the record.
 
-That file keeps only the last verdict, so every verdict is also appended to `~/.local/state/keel/verdicts.jsonl`, one JSON object per line: `{at, verdict, tree, path, run_started_at, playbook, step}`, with `run_started_at`, `playbook` and `step` (the run's `current`) taken from the tree's active run, and null when it has none.
+That file keeps only the last verdict, so every verdict is also appended to `~/.local/state/keel/verdicts.jsonl`, one JSON object per line: `{at, verdict, category, tree, path, run_started_at, playbook, step}`, with `category` the costliest kind of finding the verifier named on its `CATEGORY:` line (`behaviour`, `done-check`, `suite`, `lint`, `uncommitted` or `other`; `unknown` when it named none, and null on a pass), with `run_started_at`, `playbook` and `step` (the run's `current`) taken from the tree's active run, and null when it has none.
 The verifier rounds a change took before it passed are counted from it.
 `/ship` reads it before a push, so the session that did the work never reports its own pass.
 
 ## Script events
 
-A keel script that settles a step's clear path and hands the rest to the agent appends one line per call to `~/.local/state/keel/events.jsonl`, so what each script settles, and why it hands work back, can be counted.
+Each keel script a step calls appends one line per call to `~/.local/state/keel/events.jsonl`, so what each script settles, and why it hands work back, can be counted.
 Each line is `{at, cmd, args, exit, reason, ms, tree, playbook, step}`: the subcommand and its arguments, the exit code (0 settled, 2 handed to the agent, 1 broke), the exit-2 reason or the error, null on exit 0, how long it took in milliseconds, the tree it ran in, and the playbook and step (the run's `current`) of the tree's active run, null when it has none.
-`keel merge` writes it today; each script added later calls the same helper.
+`keel run`, `linear`, `issue`, `verdict`, `verify-brief`, `stack`, `ship` and `merge` write it, with `cmd` the command and its verb, such as `run step` or `linear get`; each script added later calls the same helper.
+The step is the run's `current` once the call has finished, so `run step 3 done` records the step after it, and `run stop` records none.
+Hooks and `keel status`, which run on every tool call or are polled, write nothing of their own; a git-guard refusal shows as the `run decide` it records.
 Writing the line never changes the script's own exit code or output.
 
 ## What a run holds

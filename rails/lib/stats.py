@@ -10,7 +10,8 @@ runs "with", "through" or "run"; a step running none counts as
 `<playbook> step <n>`, the time before step 1 as the router, and each
 keel-verifier spawn as /verify. Tool calls, time and tokens are given to the
 step a run had in `doing` when they happened, found from the `keel run start`
-and `keel run step <n> doing` calls in the transcript; a subagent counts
+and `keel run step <n> doing` calls in the transcript, a `done` or `skip`
+with `--next` entering the step after; a subagent counts
 toward the step its first message falls in. A skill is also counted when it is
 invoked directly, typed as `/name` or called through the agent's Skill tool;
 the invocation holds what happens until the next message the user types or
@@ -37,7 +38,7 @@ import sys
 from typing import TypedDict
 
 VERSION = 1
-CACHE_VERSION = 7
+CACHE_VERSION = 8
 # A gap between two messages longer than this is idle, not work.
 IDLE_S = 1800
 # A step runs the skill its text runs "with", "through" or "run"; a step that
@@ -46,10 +47,16 @@ SKILL_RE = re.compile(r"\b(?:with|through|run)\s+`?/([a-z][a-z0-9-]*)(?![\w/.-])
 # A slash command the user typed, as Claude Code records it.
 COMMAND_RE = re.compile(r"<command-name>/([a-z][a-z0-9:-]*)</command-name>")
 TOKEN_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+# Each kind of token by the name stats gives it, in TOKEN_KEYS's order. Cache
+# reads cost about a tenth of the rest, so a total alone misleads on cost.
+KINDS = ("input", "cache_write", "cache_read", "output")
 STEP_LINE = re.compile(r"^(\d+)\.\s+(.*)$")
-# keel run start, step <n> doing and stop, in the order a command runs them;
-# a start's --playbook is read within its own part of the command.
-RUN_CALL = re.compile(r"keel run (?:start\b[^;&|\n]*?--playbook\s+['\"]?([\w-]+)|step (\d{1,4}) doing\b|(stop)\b)")
+# keel run start, step <n> doing, step <n> done or skip with --next, which
+# enters step n+1, and stop, in the order a command runs them; a start's
+# --playbook and a step's --next are read within their own part of the command.
+RUN_CALL = re.compile(r"keel run (?:start\b[^;&|\n]*?--playbook\s+['\"]?([\w-]+)|step (\d{1,4}) doing\b"
+                      r"|step (\d{1,4}) (?:done|skip\b(?:[^;&|\n'\"]|\"[^\"\n]*\"|'[^'\n]*')*?)\s+--next(?![\w-])"
+                      r"|(stop)\b)")
 # How far a run folder's start may sit outside the call that made it.
 SLACK = dt.timedelta(seconds=5)
 
@@ -69,6 +76,9 @@ class Bucket(TypedDict):
     wait_s: float
     session_tokens: int
     subagent_tokens: int
+    kinds: Counts
+    session_turns: int
+    subagent_turns: int
     models: Counts
     subagents: Counts
 
@@ -90,6 +100,9 @@ class Invocation(TypedDict):
     wait_s: float
     session_tokens: int
     subagent_tokens: int
+    kinds: Counts
+    session_turns: int
+    subagent_turns: int
     models: Counts
     subagents: Counts
 
@@ -109,6 +122,8 @@ class Verifier(TypedDict):
     run: str | None
     agent_s: float
     tokens: int
+    kinds: Counts
+    turns: int
     models: Counts
 
 
@@ -186,11 +201,12 @@ def message_of(entry: dict[str, object]) -> dict[str, object]:
     return message if isinstance(message, dict) else {}
 
 
-def tokens(entry: dict[str, object]) -> int:
+def usage_of(entry: dict[str, object]) -> Counts:
+    """An assistant message's tokens by kind."""
     usage = message_of(entry).get("usage")
     if not isinstance(usage, dict):
-        return 0
-    return sum(count(usage.get(k)) or 0 for k in TOKEN_KEYS)
+        return {}
+    return {kind: n for kind, k in zip(KINDS, TOKEN_KEYS) if (n := count(usage.get(k)))}
 
 
 def is_prompt(entry: dict[str, object]) -> bool:
@@ -280,14 +296,16 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
         k = (key[0], key[1], day)
         if k not in buckets:
             buckets[k] = Bucket(playbook=k[0], step=k[1], day=k[2], runs=0, reentries=0, calls=0, agent_s=0.0,
-                                wait_s=0.0, session_tokens=0, subagent_tokens=0, models={}, subagents={})
+                                wait_s=0.0, session_tokens=0, subagent_tokens=0, kinds={}, session_turns=0,
+                                subagent_turns=0, models={}, subagents={})
         return buckets[k]
 
     def invocation(skill: str, how: str, in_step: str, day: str) -> Invocation:
         k = (skill, how, in_step, day)
         if k not in invocations:
             invocations[k] = Invocation(skill=skill, how=how, step=in_step, day=day, runs=0, calls=0, agent_s=0.0,
-                                        wait_s=0.0, session_tokens=0, subagent_tokens=0, models={}, subagents={})
+                                        wait_s=0.0, session_tokens=0, subagent_tokens=0, kinds={}, session_turns=0,
+                                        subagent_turns=0, models={}, subagents={})
         return invocations[k]
 
     def counts_for(target: Target, day: str) -> Bucket | Invocation:
@@ -328,8 +346,11 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
             if mid and mid not in seen:
                 seen.add(mid)
                 b = counts_for(target, day)
-                n = tokens(entry)
+                used = usage_of(entry)
+                n = sum(used.values())
                 b["session_tokens"] += n
+                b["session_turns"] += 1
+                add(b["kinds"], used)
                 model = text(message.get("model")) or "unknown"
                 b["models"][model] = b["models"].get(model, 0) + n
         content = message.get("content")
@@ -356,8 +377,22 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
             # means it never ran.
             if c.get("is_error") and not result_text(c.get("content")).lstrip().startswith("Exit code"):
                 continue
-            for call in RUN_CALL.finditer(command):
-                started_pb, n_text, stopped = call.groups()
+            calls = list(RUN_CALL.finditer(command))
+            # keel stops at the first call it refuses, so in a refused command
+            # only its last keel run call is the one refused.
+            # A refusal belongs to a keel run call only when that call is the
+            # command's last keel call; another keel command after it may be the one that failed.
+            last_keel = max((m.start() for m in re.finditer(r"\bkeel\s+[a-z]", command)), default=-1)
+            refused = (bool(c.get("is_error")) and re.search(r"^keel: ", result_text(c.get("content")), re.M) is not None
+                       and bool(calls) and calls[-1].start() >= last_keel)
+            for k, call in enumerate(calls):
+                started_pb, n_text, before_next, stopped = call.groups()
+                if before_next:
+                    # A --next keel refused, on the last step or for a bad code,
+                    # changed nothing.
+                    if refused and k == len(calls) - 1:
+                        continue
+                    n_text = str(int(before_next) + 1)
                 # A start counts when a run folder for that playbook began while
                 # the call ran, which also rules out a refused start and a command
                 # that only mentions one; its output can be redirected away.
@@ -406,22 +441,28 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
         sub_seen: set[str] = set()
         total = 0
         models: Counts = {}
+        kinds: Counts = {}
         for e in sub_entries:
             m = message_of(e)
             mid = str(m.get("id") or "")
             if e.get("type") != "assistant" or not mid or mid in sub_seen:
                 continue
             sub_seen.add(mid)
-            n = tokens(e)
+            used = usage_of(e)
+            add(kinds, used)
+            n = sum(used.values())
             total += n
             model = text(m.get("model")) or "unknown"
             models[model] = models.get(model, 0) + n
         if kind == "keel-verifier":
             verifiers.append(Verifier(day=window["day"] if window else t0.date().isoformat(), run=window["run"] if window else None,
-                                      agent_s=min((t1 - t0).total_seconds(), 4 * IDLE_S), tokens=total, models=models))
+                                      agent_s=min((t1 - t0).total_seconds(), 4 * IDLE_S), tokens=total, kinds=kinds,
+                                      turns=len(sub_seen), models=models))
         elif window:
             b = counts_for(window["target"], window["day"])
             b["subagent_tokens"] += total
+            b["subagent_turns"] += len(sub_seen)
+            add(b["kinds"], kinds)
             b["subagents"][kind] = b["subagents"].get(kind, 0) + 1
             for model, n in models.items():
                 b["models"][model] = b["models"].get(model, 0) + n
@@ -454,13 +495,16 @@ def well_formed(value: object) -> bool:
     buckets_ok = all(
         isinstance(b, dict) and isinstance(b.get("playbook"), str) and isinstance(b.get("day"), str)
         and count(b.get("step")) is not None and counts(b.get("models")) and counts(b.get("subagents"))
-        and all(count(b.get(k)) is not None for k in ("runs", "reentries", "calls", "session_tokens", "subagent_tokens"))
+        and counts(b.get("kinds"))
+        and all(count(b.get(k)) is not None for k in ("runs", "reentries", "calls", "session_tokens", "subagent_tokens",
+                                                       "session_turns", "subagent_turns"))
         and all(number(b.get(k)) for k in ("agent_s", "wait_s"))
         for b in value["buckets"])
     invocations_ok = all(
         isinstance(i, dict) and all(isinstance(i.get(k), str) for k in ("skill", "how", "step", "day"))
-        and counts(i.get("models")) and counts(i.get("subagents"))
-        and all(count(i.get(k)) is not None for k in ("runs", "calls", "session_tokens", "subagent_tokens"))
+        and counts(i.get("models")) and counts(i.get("subagents")) and counts(i.get("kinds"))
+        and all(count(i.get(k)) is not None for k in ("runs", "calls", "session_tokens", "subagent_tokens",
+                                                       "session_turns", "subagent_turns"))
         and all(number(i.get(k)) for k in ("agent_s", "wait_s"))
         for i in value["invocations"])
     starts_ok = all(isinstance(x, dict) and all(isinstance(x.get(k), str) for k in ("playbook", "day", "by"))
@@ -468,6 +512,7 @@ def well_formed(value: object) -> bool:
     verifiers_ok = all(
         isinstance(v, dict) and isinstance(v.get("day"), str) and (v.get("run") is None or isinstance(v.get("run"), str))
         and number(v.get("agent_s")) and count(v.get("tokens")) is not None and counts(v.get("models"))
+        and counts(v.get("kinds")) and count(v.get("turns")) is not None
         for v in value["verifiers"])
     return buckets_ok and invocations_ok and starts_ok and verifiers_ok
 
@@ -606,6 +651,15 @@ def add(into: Counts, more: Counts) -> None:
         into[k] = into.get(k, 0) + v
 
 
+def spend(into: "SkillRow | StepRow", b: Bucket | Invocation) -> None:
+    """Add a bucket's or invocation's tokens, by where and by kind, and its turns."""
+    into["tokens"]["session"] += b["session_tokens"]
+    into["tokens"]["subagents"] += b["subagent_tokens"]
+    into["turns"]["session"] += b["session_turns"]
+    into["turns"]["subagents"] += b["subagent_turns"]
+    add(into["tokens_by_kind"], b["kinds"])
+
+
 class SkillRow(TypedDict, total=False):
     name: str
     where: list[str]
@@ -614,6 +668,8 @@ class SkillRow(TypedDict, total=False):
     agent_s: float
     wait_s: float
     tokens: Counts
+    tokens_by_kind: Counts
+    turns: Counts
     models: Counts
     subagents: Counts
     reruns: int
@@ -631,7 +687,8 @@ def skills(all_sessions: list[Session], steps: dict[str, dict[int, str]], instal
     def entry(name: str) -> SkillRow:
         if name not in by:
             by[name] = SkillRow(name=name, where=[], runs=0, calls=0, agent_s=0.0, wait_s=0.0,
-                                tokens={"session": 0, "subagents": 0}, models={}, subagents={}, reruns=0,
+                                tokens={"session": 0, "subagents": 0}, tokens_by_kind=dict.fromkeys(KINDS, 0),
+                                turns={"session": 0, "subagents": 0}, models={}, subagents={}, reruns=0,
                                 how=[], invoked={"typed": 0, "agent": 0})
         return by[name]
 
@@ -651,8 +708,7 @@ def skills(all_sessions: list[Session], steps: dict[str, dict[int, str]], instal
             e["agent_s"] += b["agent_s"]
             e["wait_s"] += b["wait_s"]
             e["reruns"] += b["reentries"]
-            e["tokens"]["session"] += b["session_tokens"]
-            e["tokens"]["subagents"] += b["subagent_tokens"]
+            spend(e, b)
             add(e["models"], b["models"])
             add(e["subagents"], b["subagents"])
         for i in s["invocations"]:
@@ -675,8 +731,7 @@ def skills(all_sessions: list[Session], steps: dict[str, dict[int, str]], instal
             e["calls"] += i["calls"]
             e["agent_s"] += i["agent_s"]
             e["wait_s"] += i["wait_s"]
-            e["tokens"]["session"] += i["session_tokens"]
-            e["tokens"]["subagents"] += i["subagent_tokens"]
+            spend(e, i)
             add(e["models"], i["models"])
             add(e["subagents"], i["subagents"])
         per_run: collections.Counter[str] = collections.Counter()
@@ -689,6 +744,8 @@ def skills(all_sessions: list[Session], steps: dict[str, dict[int, str]], instal
             ways["verify"]["verifier"] += 1
             e["agent_s"] += v["agent_s"]
             e["tokens"]["subagents"] += v["tokens"]
+            e["turns"]["subagents"] += v["turns"]
+            add(e["tokens_by_kind"], v["kinds"])
             add(e["models"], v["models"])
             add(e["subagents"], {"keel-verifier": 1})
             if v["run"]:
@@ -731,6 +788,8 @@ class StepRow(TypedDict):
     entered: int
     agent_s: float
     tokens: Counts
+    tokens_by_kind: Counts
+    turns: Counts
 
 
 class PlaybookRow(TypedDict):
@@ -759,11 +818,16 @@ def playbooks(all_runs: list[tuple[dict[str, object], str]], steps: dict[str, di
             for i, s in enumerate(run_steps if isinstance(run_steps, list) else [], 1):
                 if not isinstance(s, dict):
                     continue
-                b = spent.get((name, i))
-                row = rows.setdefault(i, StepRow(
-                    n=i, title="", skill=skill_of(name, i, steps), done=0, skipped=0, open=0, skip_codes={}, attempts=0,
-                    rerun_runs=0, attempt_s=0.0, entered=b["runs"] if b else 0, agent_s=round(b["agent_s"]) if b else 0,
-                    tokens={"session": b["session_tokens"], "subagents": b["subagent_tokens"]} if b else {"session": 0, "subagents": 0}))
+                if i not in rows:
+                    b = spent.get((name, i))
+                    rows[i] = StepRow(
+                        n=i, title="", skill=skill_of(name, i, steps), done=0, skipped=0, open=0, skip_codes={}, attempts=0,
+                        rerun_runs=0, attempt_s=0.0, entered=b["runs"] if b else 0, agent_s=round(b["agent_s"]) if b else 0,
+                        tokens={"session": 0, "subagents": 0}, tokens_by_kind=dict.fromkeys(KINDS, 0),
+                        turns={"session": 0, "subagents": 0})
+                    if b:
+                        spend(rows[i], b)
+                row = rows[i]
                 titles[i][text(s.get("title")) or ""] += 1
                 state = s.get("state")
                 if state == "done":
@@ -800,7 +864,9 @@ def verdicts(state_dir: str, all_runs: list[tuple[dict[str, object], str]], sinc
     """Verdicts per day, and how many verified runs passed their first round.
 
     A run's verdicts come from its decisions.tsv; verdicts.jsonl adds those
-    outside runs, kept since it was introduced.
+    outside runs, kept since it was introduced. Fails are counted by category
+    from verdicts.jsonl alone, in runs and outside them, leaving out those
+    recorded before fails had one.
     """
     days: dict[str, Counts] = collections.defaultdict(dict)
     first_pass = verified = 0
@@ -822,13 +888,21 @@ def verdicts(state_dir: str, all_runs: list[tuple[dict[str, object], str]], sinc
             verified += 1
             first_pass += seq[0] == "pass"
             rounds[str(seq.index("pass") + 1 if "pass" in seq else len(seq))] += 1
+    categories: Counts = {}
     for row in read_json_lines(os.path.join(state_dir, "verdicts.jsonl")):
         day, verdict = day_of(row.get("at")), row.get("verdict")
-        if (row.get("run_started_at") is None and day and day >= since and verdict in ("pass", "fail")
-                and in_repo(text(row.get("path")) or "", repo)):
+        if not (day and verdict in ("pass", "fail") and in_repo(text(row.get("path")) or "", repo)):
+            continue
+        in_run = row.get("run_started_at") is not None
+        if not in_run and day >= since:
             add(days[day], {str(verdict): 1})
+        # A verdict in a run belongs to the day the run started, as the run does.
+        counted_day = day_of(row.get("run_started_at")) if in_run else day
+        if verdict == "fail" and (category := text(row.get("category"))) and (counted_day or "") >= since:
+            add(categories, {category: 1})
     quality = {"verified_runs": verified, "first_pass": first_pass,
-               "rounds_to_pass": dict(sorted(rounds.items(), key=lambda kv: int(kv[0])))}
+               "rounds_to_pass": dict(sorted(rounds.items(), key=lambda kv: int(kv[0]))),
+               "fail_categories": dict(sorted(categories.items(), key=lambda kv: (-kv[1], kv[0])))}
     return days, quality
 
 
@@ -870,7 +944,14 @@ def report(state_dir: str, claude_dir: str, method_dir: str, since_day: str | No
     def step_total(playbook: str, n: int) -> Bucket:
         return spent.setdefault((playbook, n), Bucket(
             playbook=playbook, step=n, day="", runs=0, reentries=0, calls=0, agent_s=0.0,
-            wait_s=0.0, session_tokens=0, subagent_tokens=0, models={}, subagents={}))
+            wait_s=0.0, session_tokens=0, subagent_tokens=0, kinds={}, session_turns=0, subagent_turns=0,
+            models={}, subagents={}))
+
+    def take(t: Bucket, b: Bucket | Invocation) -> None:
+        for k in ("session_tokens", "subagent_tokens", "session_turns", "subagent_turns"):
+            t[k] += b[k]
+        add(t["kinds"], b["kinds"])
+        t["agent_s"] += b["agent_s"]
     for s in all_sessions:
         if in_repo(s["cwd"], repo):
             for x in s["starts"]:
@@ -879,19 +960,15 @@ def report(state_dir: str, claude_dir: str, method_dir: str, since_day: str | No
             for b in s["buckets"]:
                 if b["day"] >= since:
                     t = step_total(b["playbook"], b["step"])
-                    for k in ("runs", "session_tokens", "subagent_tokens"):
-                        t[k] += b[k]
-                    t["agent_s"] += b["agent_s"]
+                    t["runs"] += b["runs"]
+                    take(t, b)
             # A skill invoked in a step is that step's work when the step runs
             # that same skill or the skill is not keel's, as skills() counts it.
             for i in s["invocations"]:
                 playbook, _, n = i["step"].rpartition(" ")
                 if (i["day"] >= since and playbook and n.isdigit()
                         and (i["skill"] not in installed or skill_of(playbook, int(n), steps) == i["skill"])):
-                    t = step_total(playbook, int(n))
-                    for k in ("session_tokens", "subagent_tokens"):
-                        t[k] += i[k]
-                    t["agent_s"] += i["agent_s"]
+                    take(step_total(playbook, int(n)), i)
     return {
         "version": VERSION,
         "since": since_day,
@@ -907,13 +984,16 @@ def report(state_dir: str, claude_dir: str, method_dir: str, since_day: str | No
 
 
 def table(rows: list[SkillRow]) -> str:
-    out = [f"{'skill':<26} {'runs':>5} {'agent/run':>10} {'wait/run':>9} {'tokens/run':>11} {'reruns':>6}  model"]
+    out = [f"{'skill':<26} {'runs':>5} {'agent/run':>10} {'wait/run':>9} {'tokens/run':>11} {'cache%':>6} "
+           f"{'turns/run':>9} {'reruns':>6}  model"]
     for s in rows:
         n = max(s["runs"], 1)
         tok = s["tokens"]["session"] + s["tokens"]["subagents"]
+        cache = f"{s['tokens_by_kind']['cache_read'] / tok:.0%}" if tok else "-"
+        turns = s["turns"]["session"] + s["turns"]["subagents"]
         top = max(s["models"].items(), key=lambda kv: kv[1])[0] if s["models"] else "-"
         out.append(f"{s['name']:<26} {s['runs']:>5} {s['agent_s'] / n / 60:>8.1f}m {s['wait_s'] / n / 60:>7.1f}m "
-                   f"{tok / n / 1e6:>10.1f}M {s['reruns']:>6}  {top}")
+                   f"{tok / n / 1e6:>10.1f}M {cache:>6} {turns / n:>9.1f} {s['reruns']:>6}  {top}")
     return "\n".join(out)
 
 

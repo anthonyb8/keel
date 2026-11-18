@@ -21,47 +21,38 @@ The next change needs its own `/ship`.
 
 Read `~/.keel/claude/VOICE.md` before writing the commit message or the PR body.
 
-## 1. Check where you are
+`keel ship` does the fixed steps: it refuses a protected branch, commits exactly the files named, gates a push on `keel verdict` passing for HEAD, pushes to the branch's own name, and opens the PR into the base, each git and gh command checked by git-guard first.
+It exits 0 with what it did, 2 with a reason and the facts when it hands the step back, or 1 when something broke.
+Your part is the message, the body, the checks and `/verify`.
 
-- The base is `keel base`, or the repository's default branch when that prints nothing.
-- Stop if the current branch is the base, the default branch, or a release branch the pack names: nothing ships from a protected branch.
-- Run the checks the repository's own `CLAUDE.md` requires before finishing, unless they already passed on the current state of the tree.
-  Stop on a failure and report it.
+## 1. Check
+
+Run the checks the repository's own `CLAUDE.md` requires before finishing, unless they already passed on the current state of the tree.
+Stop on a failure and report it.
 
 ## 2. Commit
 
-- `git status`, then `git add` exactly the files this work touched, never `-A` or `.`.
-- One commit: a headline prefixed with the issue ID from the branch name where the project uses one, or with the issue being built in a project build, then a body of two or three sentences on why, in VOICE.md's style.
-- No co-author or agent attribution line.
-- Never amend, squash or rewrite an existing commit.
-- With nothing to commit but commits not yet on `origin`, go on to verify.
+Write the message to a file under the job's temp directory: a headline prefixed with the issue ID from the branch name where the project uses one, or with the issue being built in a project build, then a body of two or three sentences on why, in VOICE.md's style, with no co-author or agent attribution line.
+Then `keel ship commit --files <every file this work touched> --message <file>`, naming each file, never a directory.
+For `/ship push` or `/ship pr`, give the same `--files` and `--message` to that call instead, as step 3 says; with nothing left to commit, call it without them.
 
-## 3. Verify
+## 3. Verify and push
 
-Every push is verified, in every repository, unless one of these holds:
+Every push is verified, in every repository, unless the user skipped it for this run, or the commits being pushed change only descriptive docs, such as a README or files under `docs/`, with nothing a verifier could run.
+Rules, skills, playbooks and prompts change behaviour: they are verified.
 
-- the user skipped it for this run, as above;
-- the commits being pushed change only descriptive docs, such as a README or files under `docs/`, with nothing a verifier could run. Rules, skills, playbooks and prompts change behaviour: they are verified.
+Call `keel ship push`, or `keel ship pr` for a PR, with `--files` and `--message` when the push should carry a commit; it commits first.
+Without a passing verdict for HEAD it exits 2 having pushed nothing: run `/verify` on what it committed, then call it again without `--files`.
+A skip is `--skip-verify "<why>"`, which the output names; a contracted run cannot skip.
 
-Otherwise run `/verify`, then `keel verdict` in the tree.
-It reads the verdict the SubagentStop hook recorded from the verifier's own last line, never this session's account of it, and passes only on a pass for the code at HEAD.
-Push only once `keel verdict` passes; on a failure stop and report its findings.
-A skip is never silent: the report names it and why.
+## 4. Open the PR
 
-## 4. Push
+Fill the project's PR template as VOICE.md describes, adding nothing to it, and write it to a file under the job's temp directory; in a project build, the title names the project and the body names every issue the branch built, each with its commit.
+`keel ship pr --title "<headline>" --body <file>` pushes and opens it, as a draft in a contracted run.
+When the branch already has an open PR into the base it pushes and prints that PR's URL, and editing its title or body is a separate ask.
+Never merge, approve or retarget a PR, and leave labels and reviewers alone.
 
-`git push -u origin HEAD:<branch>`, to the branch's own name.
-Never force-push, never push to a protected branch.
+## 5. Report
 
-## 5. Open the PR
-
-- If `gh pr view` finds one for this branch already, stop at the push and give its URL: editing a PR's title or body is a separate ask.
-- Fill the project's PR template as VOICE.md describes, adding nothing to it, and write it to a file under the job's temp directory.
-- In a project build, the title names the project and the body names every issue the branch built, each with its commit.
-- `gh pr create --base <base> --head <branch> --title "<headline>" --body-file <file>`.
-- Never merge, approve or retarget it, and leave labels and reviewers alone.
-
-## 6. Report
-
-The commit SHA, the verdict as `keel verdict` printed it or `verify skipped: <reason>`, and the PR URL.
+The commit SHA, the verdict or the skip as `keel ship` printed it, and the PR URL.
 Leave the issue tracker's state alone: moving an issue past In Progress is the user's call.

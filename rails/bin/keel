@@ -22,15 +22,18 @@
 #                               search <text>             the team's open issues whose title has the text
 #                               create --title <t> --body <file> [--project <name>] [--blocked-by <ID>]...
 #                               update <ID> [--state <name>] [--body <file>]
+#                               update <ID> --state <name> --only-from <state,...>
 #                               comment <ID> --body <file>
 #                               relate <A> blocks <B>
-#                               project create|get|order|update <name> [--summary <s>] [--body <file>]
+#                               project create|get|order|update <name or code, such as P-ANB-12> [--summary <s>] [--body <file>]
 #   keel template [name] [dir]
 #                             print the issue or project template that applies in dir; no name lists them
-#   keel run start --playbook <name> --goal <text> --steps <file> [--replace]
-#                             start a run in this tree, recorded under ~/.local/state/keel/runs
-#   keel run step <n> doing|done|skip <code> [note]
-#                             move a step on; a skip's code is not-applicable, already-done, user-said or blocked
+#   keel run start --playbook <name> --goal <text> [--steps <file>] [--replace]
+#                             start a run in this tree, recorded under ~/.local/state/keel/runs, with
+#                             the playbook's numbered steps unless --steps names a file of them
+#   keel run step <n> doing|done|skip <code> [note] [--next]
+#                             move a step on; a skip's code is not-applicable, already-done, user-said or
+#                             blocked; --next after done or skip also starts step n+1
 #   keel run pause            pause the run; a resume note on stdin goes into its folder
 #   keel run decide "<decision>" --why <text> --evidence <ref> [--result <text>] [--attention]
 #                             log a decision to the run's decisions.tsv
@@ -42,6 +45,14 @@
 #   keel dash [--since YYYY-MM-DD] [--repo name]
 #                             write keel stats as one page under ~/.local/state/keel and open it
 #   keel verdict [--json]     the last keel-verifier's verdict for this tree; passes only on a pass at HEAD
+#   keel verify-brief         what a verifier starts from: base, commits, diff stat, and the done
+#                             check's and the pack's checks' results, cached by the code they ran on
+#   keel issue begin [ID]     issue steps 1 and 2: the ID, else the branch's, its state and open
+#                             blockers, and go (exit 0), or stop or ask (exit 2) with why
+#   keel ship commit --files <path>... --message <file>
+#   keel ship push|pr [--files <path>... --message <file>] [--skip-verify <reason>] [--title <text> --body <file>]
+#                             /ship's fixed steps: commit the named files, then the verdict gate,
+#                             the push and the PR, each through git-guard; else exit 2 and why
 #   keel merge <squash|commit> [n]
 #                             merge PR n, else the current branch's, with that method once it is
 #                             ready and GitHub allows it; else exit 2 and why
@@ -620,14 +631,79 @@ team_id() {
     jq -er '"\(.teams.nodes[0].id // error) \(.organization.name)"' || die "no team $1 in this workspace"
 }
 
+# A project is found by its name, else, when the argument looks like one, by
+# its code, such as P-ANB-12, which Linear's project(id:) takes. The name goes
+# first, since a lookup by name never errors on a miss; Linear answers an
+# unknown code with an error, which here means only "not found".
+project_find() { # project_find <name or code> <fields>
+  local p
+  p=$(gql "query(\$name: String!) { projects(first: 1, filter: {name: {eq: \$name}}) { nodes { $2 } } }" --arg name "$1" |
+    jq '.projects.nodes[0] // empty') || exit 1
+  if [[ -z "$p" && "$1" =~ ^P-[A-Z]+-[0-9]+$ ]]; then
+    p=$(gql "query(\$id: String!) { project(id: \$id) { $2 } }" --arg id "$1" 2>/dev/null | jq '.project // empty') || p=""
+    [[ -n "$p" ]] || die "no project named or coded $1"
+  fi
+  [[ -n "$p" ]] || die "no project named $1"
+  echo "$p"
+}
 project_id() {
-  gql 'query($name: String!) { projects(filter: {name: {eq: $name}}) { nodes { id } } }' --arg name "$1" |
-    jq -er '.projects.nodes[0].id' || die "no project named $1"
+  project_find "$1" id | jq -r .id
 }
 
 need_file() {
   [[ -n "${2:-}" ]] || die "$1 needs a value"
   [[ -f "$2" ]] || die "no such file: $2"
+}
+
+# keel issue begin settles issue steps 1 and 2: which issue, and whether its
+# state and blockers let the build go on, stop, or need the user. It exits 0 on
+# go and 2 on stop or ask, with the facts, as keel merge does.
+ISSUE_FACTS='{}'
+
+issue_result() { # issue_result <go|stop|ask> <reason>
+  [[ "$1" == go ]] || EVENT_REASON="$2"
+  jq -n --arg r "$1" --arg why "$2" --argjson f "$ISSUE_FACTS" '{result: $r, reason: $why} + $f'
+  [[ "$1" == go ]] || exit 2
+}
+
+issue_cmd() { # issue begin [ID]
+  local id issue state project base ref cleared target
+  event_start "issue${1:+ $1}" "$@"
+  [[ "${1:-}" == begin && $# -le 2 ]] || die "usage: keel issue begin [ID]"
+  id=$(tr '[:lower:]' '[:upper:]' <<<"${2:-}")
+  if [[ -z "$id" ]]; then
+    id=$(git branch --show-current 2>/dev/null | grep -oE '[A-Za-z]+-[0-9]+' | head -1 | tr '[:lower:]' '[:upper:]' || true)
+    [[ -n "$id" ]] || issue_result ask "name the issue: no ID was given and the branch name holds none"
+  fi
+  target=$(linear_target "$PWD") || exit 1
+  LINEAR_ENV=${target#* }
+  issue=$(gql 'query IssueBegin($id: String!) { issue(id: $id) {
+      identifier branchName state { name } project { name }
+      inverseRelations { nodes { type issue { identifier state { name type } project { name } } } } } }' --arg id "$id" | jq -c .issue)
+  [[ "$issue" != null ]] || die "Linear has no issue $id"
+  state=$(jq -r .state.name <<<"$issue")
+  project=$(jq -r '.project.name // ""' <<<"$issue")
+  # A blocker in the same project counts as cleared inside a project build once
+  # a commit on this branch has a headline starting with its ID.
+  base=$(base_for "$PWD")
+  [[ -n "$base" ]] || base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || base=""
+  base=${base#origin/}
+  ref=""
+  if [[ -n "$base" ]] && git rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null; then ref="origin/$base"; fi
+  cleared=$([[ -z "$ref" ]] || git log --format=%s "$ref..HEAD" | { grep -oE '^[A-Z]+-[0-9]+' || true; } | sort -u | jq -Rsc 'split("\n")[:-1]')
+  ISSUE_FACTS=$(jq -c --arg p "$project" --argjson cleared "${cleared:-[]}" '{id: .identifier, branchName, state: .state.name,
+    blockers: [.inverseRelations.nodes[] | select(.type == "blocks" and (.issue.state.type | IN("completed", "canceled") | not))
+      | .issue | {id: .identifier, state: .state.name,
+        cleared: ((.project.name // "") == $p and $p != "" and (.identifier | IN($cleared[])))}]}' <<<"$issue")
+  case "$state" in
+  Backlog | Todo | "In Progress") ;;
+  "In Review" | "In Staging" | Done | Canceled | Duplicate) issue_result stop "$id is $state" ;;
+  *) issue_result ask "$id is in $state, which is neither a state to go on from nor one to stop at" ;;
+  esac
+  local open
+  open=$(jq -r '[.blockers[] | select(.cleared | not) | .id] | join(", ")' <<<"$ISSUE_FACTS")
+  [[ -z "$open" ]] || issue_result ask "$id is blocked by $open, still open"
+  issue_result go "$id is $state, with nothing open blocking it"
 }
 
 linear() {
@@ -694,22 +770,35 @@ linear_create() {
 }
 
 linear_update() {
-  local id="${1:-}" state="" body="" sid
-  [[ -n "$id" && "$id" != --* ]] || die "usage: keel linear update <ID> [--state <name>] [--body <file>]"
+  local usage="usage: keel linear update <ID> [--state <name>] [--body <file>] | <ID> --state <name> --only-from <state,...>"
+  local id="${1:-}" state="" body="" from="" sid issue now
+  [[ -n "$id" && "$id" != --* ]] || die "$usage"
   shift
   while (($#)); do
     case "$1" in
     --state) state="${2:-}" && shift 2 ;;
     --body) body="${2:-}" && shift 2 ;;
-    *) die "usage: keel linear update <ID> [--state <name>] [--body <file>]" ;;
+    --only-from)
+      [[ -n "${2:-}" ]] || die "--only-from needs the states to move from, such as Backlog,Todo"
+      from="$2" && shift 2
+      ;;
+    *) die "$usage" ;;
     esac
   done
   [[ -n "$state" || -n "$body" ]] || die "update needs --state or --body"
+  # --only-from leaves the issue as it is when its state is not named, so a --body would be dropped unsaid.
+  [[ -z "$from" || ( -n "$state" && -z "$body" ) ]] || die "--only-from needs --state, and no --body"
   local args=(--arg id "$id")
   if [[ -n "$state" ]]; then
-    sid=$(gql 'query($id: String!) { issue(id: $id) { team { states { nodes { id name } } } } }' --arg id "$id" |
-      jq -er --arg s "$state" '.issue.team.states.nodes[] | select(.name == $s) | .id') ||
+    issue=$(gql 'query($id: String!) { issue(id: $id) { state { name } team { states { nodes { id name } } } } }' --arg id "$id")
+    sid=$(jq -er --arg s "$state" '.issue.team.states.nodes[] | select(.name == $s) | .id' <<<"$issue") ||
       die "no state named $state in $id's team"
+    # Moving only from the states named, so a step that runs twice never moves an issue back.
+    now=$(jq -r '.issue.state.name // empty' <<<"$issue")
+    if [[ -n "$from" ]] && ! tr ',' '\n' <<<"$from" | sed 's/^ *//; s/ *$//' | grep -qxF "$now"; then
+      echo "$id $now (unchanged: only from ${from//,/, })"
+      return 0
+    fi
     args+=(--arg stateId "$sid")
   fi
   if [[ -n "$body" ]]; then
@@ -742,12 +831,10 @@ linear_relate() {
 }
 
 # The project with its issues, each with the issues that block it.
-project_get() { # project_get <name>
-  gql 'query($name: String!) { projects(first: 1, filter: {name: {eq: $name}}) { nodes {
-      name description content url state
+project_get() { # project_get <name or code>
+  project_find "$1" 'name description content url state
       issues(first: 100) { nodes { identifier title state { name }
-        inverseRelations(first: 20) { nodes { type issue { identifier } } } } } } } }' --arg name "$1" |
-    jq -e '.projects.nodes[0]' || die "no project named $1"
+        inverseRelations(first: 20) { nodes { type issue { identifier } } } } }'
 }
 
 # A project's description is capped at 255 characters by Linear, so the long
@@ -1012,7 +1099,7 @@ run_holding() {
 }
 
 run_start() {
-  local playbook="" goal="" steps="" replace=0 contract="" allow_passing=0 tree branch dir held done_cmd="" playbook_hash=""
+  local playbook="" goal="" steps="" replace=0 contract="" allow_passing=0 tree branch dir held done_cmd="" playbook_hash="" book="" lines
   while (($#)); do
     case "$1" in
     --playbook) playbook="${2:-}" && shift 2 ;;
@@ -1021,11 +1108,31 @@ run_start() {
     --replace) replace=1 && shift ;;
     --contract) contract="${2:-}" && shift 2 ;;
     --allow-passing) allow_passing=1 && shift ;;
-    *) die "usage: keel run start --playbook <name> --goal <text> --steps <file> [--contract <file> [--allow-passing]] [--replace]" ;;
+    *) die "usage: keel run start --playbook <name> --goal <text> [--steps <file>] [--contract <file> [--allow-passing]] [--replace]" ;;
     esac
   done
   [[ -n "$playbook" && -n "$goal" ]] || die "run start needs --playbook and --goal"
-  [[ -f "$steps" ]] || die "run start needs --steps <file>, one step per line"
+  # The playbook is read once, so its steps and its hash come from the same version.
+  if [[ -f "$METHOD_DIR/playbooks/$playbook.md" ]]; then
+    book=$(cat "$METHOD_DIR/playbooks/$playbook.md" && echo x)
+    book=${book%x}
+    playbook_hash=$(printf '%s' "$book" | sha256sum | cut -d' ' -f1)
+  fi
+  # A steps file wins; without one, the steps are the playbook's numbered lines,
+  # as keel stats reads them.
+  if [[ -n "$steps" ]]; then
+    [[ -f "$steps" ]] || die "no such steps file: $steps"
+    lines=$(cat "$steps")
+  elif [[ -n "$book" ]]; then
+    lines=$(grep -E '^[0-9]+\.[[:space:]]+' <<<"$book" || true)
+  else
+    die "no playbook named $playbook: give its steps with --steps <file>, one per line"
+  fi
+  # Checked before anything is archived, so a run with no steps replaces nothing.
+  if ! sed -E 's/^[[:space:]]*([0-9]+[.)]|[-*])[[:space:]]+//' <<<"$lines" | grep -q '[^[:space:]]'; then
+    if [[ -n "$steps" ]]; then die "the steps file holds no steps"; fi
+    die "the $playbook playbook has no numbered steps"
+  fi
   tree=$(tree_of "$PWD")
   dir=$(run_dir "$tree")
   if [[ "$replace" == 0 ]] && held=$(run_holding "$tree"); then
@@ -1047,13 +1154,10 @@ run_start() {
     run_archive "$dir" "$(jq -r .state "$dir/status.json")" "$(jq -r '.note // ""' "$dir/status.json")"
   fi
   branch=$(git -C "$tree" symbolic-ref -q --short HEAD 2>/dev/null || echo "")
-  # The playbook file's hash tells runs that followed different versions of
-  # the same playbook apart.
-  [[ -f "$METHOD_DIR/playbooks/$playbook.md" ]] && playbook_hash=$(sha256sum "$METHOD_DIR/playbooks/$playbook.md" | cut -d' ' -f1)
   mkdir -p "$dir"
   # One step per non-empty line, a leading "1. " or "- " dropped.
   jq -n --arg tree "$tree" --arg branch "$branch" --arg playbook "$playbook" --arg goal "$goal" \
-    --arg now "$(now)" --rawfile steps "$steps" --arg ph "$playbook_hash" '{
+    --arg now "$(now)" --arg steps "$lines" --arg ph "$playbook_hash" '{
       version: 1, tree: $tree, branch: $branch, playbook: $playbook, goal: $goal,
       playbook_hash: (if $ph == "" then null else $ph end),
       state: "active",
@@ -1062,10 +1166,6 @@ run_start() {
       current: null, started_at: $now, updated_at: $now, stale: false,
       attention: 0, done_check: null, verifier: null, gate: null, contract_hash: null
     }' | write_atomic "$dir/status.json"
-  [[ "$(jq '.steps | length' "$dir/status.json")" -gt 0 ]] || {
-    rm -rf "$dir"
-    die "the steps file holds no steps"
-  }
   if [[ -n "$contract" ]]; then
     cp "$contract" "$dir/contract.md"
     run_update "$dir" '.contract_hash = $h' --arg h "$(sha256sum "$dir/contract.md" | cut -d' ' -f1)"
@@ -1093,8 +1193,15 @@ held_run_dir() { # held_run_dir <tree or ""> [any]: "any" also takes a run that 
 SKIP_CODES="not-applicable already-done user-said blocked"
 
 run_step() {
-  local n="${1:-}" state="${2:-}" code="${3:-}" reason="${4:-}" dir count usage="usage: keel run step <n> doing|done|skip <code> [note]"
+  local usage="usage: keel run step <n> doing|done [--next] | skip <code> [note] [--next]" next=false dir count
+  # --next, last, also starts the step after: one call to close a step and open the next.
+  if (($#)) && [[ "${!#}" == --next ]]; then
+    next=true
+    set -- "${@:1:$#-1}"
+  fi
+  local n="${1:-}" state="${2:-}" code="${3:-}" reason="${4:-}"
   [[ "$n" =~ ^[0-9]+$ && $# -le 4 ]] || die "$usage"
+  [[ "$next" == false || "$state" != doing ]] || die "--next follows done or skip, not doing"
   case "$state" in
   doing | done) (($# <= 2)) || die "only skip takes a code and a note" ;;
   skip) [[ "$code" =~ ^[a-z-]+$ && " $SKIP_CODES " == *" $code "* ]] ||
@@ -1104,23 +1211,27 @@ run_step() {
   dir=$(held_run_dir "") || exit 1
   count=$(jq '.steps | length' "$dir/status.json")
   ((n >= 1 && n <= count)) || die "the run has steps 1 to $count"
+  [[ "$next" == false ]] || ((n < count)) || die "step $n is the last, so there is no step for --next to start"
   # A step being worked on is the current one; finishing or skipping it moves
   # current to the first step still open. Touching a paused run resumes it.
   # Setting a step to doing closes any other step's open attempt and opens one
   # on this step, unless it already has one open; done and skip close it.
   run_update "$dir" "$ATTEMPTS_JQ"'
-    (if $s == "doing" then
-      .steps |= (to_entries | map(if .key == $i then .value else .value | close_attempt("left") end))
-      | if (.steps[$i].attempts | length) > 0 and .steps[$i].attempts[-1].ended_at == null then .
-        else .steps[$i].attempts = .steps[$i].attempts + [{started_at: $now, ended_at: null, state: "doing"}] end
-    else .steps[$i] |= close_attempt(if $s == "skip" then "skipped" else "done" end) end)
+    def start($k):
+      .steps |= (to_entries | map(if .key == $k then .value else .value | close_attempt("left") end))
+      | (if (.steps[$k].attempts | length) > 0 and .steps[$k].attempts[-1].ended_at == null then .
+         else .steps[$k].attempts = .steps[$k].attempts + [{started_at: $now, ended_at: null, state: "doing"}] end)
+      | .steps[$k].state = "doing" | .steps[$k].skip_code = null | .steps[$k].reason = null
+      | .current = $k + 1;
+    (if $s == "doing" then start($i)
+     else .steps[$i] |= close_attempt(if $s == "skip" then "skipped" else "done" end)
+       | .steps[$i].state = (if $s == "skip" then "skipped" else $s end)
+       | .steps[$i].skip_code = (if $s == "skip" then $c else null end)
+       | .steps[$i].reason = (if $s == "skip" and $r != "" then $r else null end)
+       | .current = ([.steps | to_entries[] | select(.value.state == "pending" or .value.state == "doing") | .key + 1] | first) end)
     | .state = "active"
-    | .steps[$i].state = (if $s == "skip" then "skipped" else $s end)
-    | .steps[$i].skip_code = (if $s == "skip" then $c else null end)
-    | .steps[$i].reason = (if $s == "skip" and $r != "" then $r else null end)
-    | .current = (if $s == "doing" then $i + 1
-        else ([.steps | to_entries[] | select(.value.state == "pending" or .value.state == "doing") | .key + 1] | first) end)' \
-    --argjson i "$((n - 1))" --arg s "$state" --arg c "$code" --arg r "$reason"
+    | if $next then start($i + 1) else . end' \
+    --argjson i "$((n - 1))" --arg s "$state" --arg c "$code" --arg r "$reason" --argjson next "$next"
   if [[ "$state" == skip ]]; then
     log_row "$dir" "skipped step $n" "$code${reason:+: $reason}" "$(jq -r ".steps[$((n - 1))].title" "$dir/status.json")" "skipped" yes
   fi
@@ -1402,14 +1513,21 @@ hook_handback() {
 # goes to $VERDICTS_DIR for every tree, where `keel verdict` reads it, and
 # into the run as well when an active run holds the tree.
 record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed it back>]
-  local tree dir verdict findings code at run
+  local tree dir verdict findings code at run category=null
   tree=$(tree_of "$1" 2>/dev/null) || return 0
   code=$(git -C "$tree" rev-parse 'HEAD^{tree}' 2>/dev/null) || return 0
   verdict=$(grep -oE '^VERDICT: (pass|fail)[[:space:]]*$' <<<"$2" | tail -1 | cut -d' ' -f2 | tr -d '[:space:]' || true)
-  findings=$(sed -n '/^VERDICT: /,$p' <<<"$2" | tail -n +2 | head -c 4000)
+  findings=$(sed -n '/^VERDICT: /,$p' <<<"$2" | tail -n +2 | grep -v '^CATEGORY: ' | head -c 4000 || true)
   if [[ -z "$verdict" ]]; then
     verdict=fail
     findings="the verifier ended without a VERDICT line"
+  fi
+  # Why a fail failed, for keel stats to count; a missing or unknown category
+  # records unknown and never changes the verdict.
+  if [[ "$verdict" == fail ]]; then
+    category=$(grep -oE '^CATEGORY: (behaviour|done-check|suite|lint|uncommitted|other)[[:space:]]*$' <<<"$2" |
+      tail -1 | cut -d' ' -f2 | tr -d '[:space:]' || true)
+    category=$(jq -cn --arg c "${category:-unknown}" '$c')
   fi
   at=$(now)
   mkdir -p "$VERDICTS_DIR"
@@ -1421,8 +1539,8 @@ record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed
   run='{}'
   [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] &&
     run=$(jq -c '{run_started_at: .started_at, playbook, step: .current}' "$dir/status.json")
-  jq -cn --arg v "$verdict" --arg t "$code" --arg p "$tree" --arg now "$at" --argjson run "$run" \
-    '{at: $now, verdict: $v, tree: $t, path: $p, run_started_at: null, playbook: null, step: null} + $run' >>"$STATE_DIR/verdicts.jsonl"
+  jq -cn --arg v "$verdict" --argjson c "$category" --arg t "$code" --arg p "$tree" --arg now "$at" --argjson run "$run" \
+    '{at: $now, verdict: $v, category: $c, tree: $t, path: $p, run_started_at: null, playbook: null, step: null} + $run' >>"$STATE_DIR/verdicts.jsonl"
   [[ "$run" != '{}' ]] || return 0
   run_update "$dir" '.verifier = {verdict: $v, tree: $t, at: $now, findings: $f}' \
     --arg v "$verdict" --arg t "$code" --arg f "$findings"
@@ -1458,16 +1576,21 @@ verdict() { # verdict [--json]
 # recognise is exit 2.
 MERGE_FACTS='{}'
 
-# A keel script that settles a step's clear path appends one line per call to
-# events.jsonl: what it was asked, how it exited, why, how long it took, and
-# the run and step it ran in, so what each script settles can be counted.
+# Each keel script a step calls, such as run, linear, verdict, stack and merge,
+# appends one line per call to events.jsonl: what it was asked, how it exited,
+# why, how long it took, and the run and step it ran in, so what each script
+# settles can be counted. Hooks and polled commands, such as status, do not log.
 # Writing the line never changes the script's own exit code or output.
 EVENT_REASON=""
 
 event_start() { # event_start <cmd> [args...]: logs the call when the script exits
   EVENT_CMD="$1"
   shift
-  EVENT_ARGS=$(jq -cn '$ARGS.positional' --args "$@")
+  # NUL-separated, since jq reads an argument such as --playbook as its own option.
+  EVENT_ARGS='[]'
+  if (($#)); then
+    EVENT_ARGS=$(printf '%s\0' "$@" | jq -Rsc 'split("\u0000")[:-1]' 2>/dev/null) || EVENT_ARGS='[]'
+  fi
   EVENT_T0=$(date +%s%3N)
   trap 'event_log $?' EXIT
 }
@@ -1485,6 +1608,236 @@ event_log() { # event_log <exit code>
       '{at: $at, cmd: $cmd, args: $args, exit: $exit, reason: (if $reason == "" then null else $reason end),
         ms: $ms, tree: $tree, playbook: null, step: null} + $run' >>"$STATE_DIR/events.jsonl"
   } 2>/dev/null || true
+}
+
+# A verifier opens by rebuilding the same facts every round, so verify-brief
+# gathers them once: facts and raw output only, never a judgement. A check's
+# result is cached by the code it ran on, HEAD^{tree}, and a dirty tree is
+# never cached, since that key does not cover uncommitted files.
+verify_brief() {
+  local tree code dirty base ref pack dir done_cmd cmd
+  local -a checks=()
+  tree=$(tree_of "$PWD")
+  code=$(git -C "$tree" rev-parse --verify --quiet 'HEAD^{tree}' 2>/dev/null) || die "$tree has no commit to verify"
+  dirty=$(git -C "$tree" status --porcelain)
+  base=$(base_for "$tree")
+  if [[ -z "$base" ]]; then
+    base=$(git -C "$tree" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || base=""
+    base=${base#origin/}
+  fi
+  ref=""
+  if [[ -n "$base" ]] && git -C "$tree" rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null; then
+    ref="origin/$base"
+  fi
+  echo "tree: $tree"
+  echo "HEAD: $(git -C "$tree" rev-parse --short=12 HEAD), code ${code:0:12}"
+  if [[ -n "$ref" ]]; then
+    echo "base: $base"
+    echo "commits ($ref..HEAD):"
+    git -C "$tree" log --oneline "$ref..HEAD" | sed 's/^/  /'
+    echo "diff stat ($ref...HEAD):"
+    git -C "$tree" diff --stat "$ref...HEAD" 2>/dev/null | sed 's/^/  /' || echo "  no history shared with $ref, so no diff against it"
+  else
+    echo "base: unknown"
+  fi
+  if [[ -n "$dirty" ]]; then
+    echo "uncommitted, so no check below is cached:"
+    echo "  ${dirty//$'\n'/$'\n'  }"
+  else
+    echo "uncommitted: none"
+  fi
+  done_cmd=""
+  dir=$(run_dir "$tree")
+  if run_holding "$tree" >/dev/null && [[ -f "$dir/contract.md" ]]; then
+    done_cmd=$(contract_field "$dir/contract.md" "done")
+  fi
+  pack=$(pack_for "$tree")
+  if [[ -n "$pack" && -f "$pack/checks" ]]; then
+    mapfile -t checks < <(grep -Ev '^[[:space:]]*(#|$)' "$pack/checks")
+  fi
+  if [[ -n "$done_cmd" ]]; then
+    brief_check "done check" "$done_cmd" "$tree" "$code" "$dirty"
+  else
+    echo "done check: none"
+  fi
+  if ((${#checks[@]} == 0)); then
+    if [[ -n "$pack" ]]; then echo "checks: none; the pack has no checks file"; else echo "checks: none; no pack owns this repository"; fi
+  fi
+  for cmd in "${checks[@]}"; do
+    brief_check check "$cmd" "$tree" "$code" "$dirty"
+  done
+}
+
+brief_check() { # brief_check <label> <command> <tree> <code> <dirty>
+  local file result at code out
+  file="$STATE_DIR/verify-brief/$(tree_key "$3")/$(printf '%s\n%s' "$4" "$2" | sha256sum | cut -c1-32).json"
+  echo "$1: $2"
+  if [[ -z "$5" && -f "$file" ]] && at=$(jq -er .at "$file" 2>/dev/null); then
+    code=$(jq -r .exit "$file")
+    out=$(jq -r .out "$file")
+    echo "  exit $code, cached from $at on this code"
+  else
+    result=$(run_done_check "$3" "$2")
+    code=$(head -1 <<<"$result")
+    out=$(tail -n +2 <<<"$result")
+    echo "  exit $code, ran now"
+    if [[ -z "$5" ]]; then
+      mkdir -p "$(dirname "$file")"
+      jq -n --arg at "$(now)" --argjson exit "$code" --arg out "$out" '{at: $at, exit: $exit, out: $out}' | write_atomic "$file"
+    fi
+  fi
+  [[ -z "$out" ]] || echo "  ${out//$'\n'/$'\n'  }"
+}
+
+# keel ship does /ship's fixed steps, so the agent writes only the message and
+# the PR body: commit exactly the named files, then for push and pr the verdict
+# gate, the push and the PR. Each git and gh command goes through git-guard
+# first, so it is held to the same rules as the agent's own commands, and a
+# state it cannot settle exits 2 with why, as keel merge does.
+SHIP_FACTS='{}'
+
+ship_fact() { # ship_fact <key> <json>
+  SHIP_FACTS=$(jq -c --arg k "$1" --argjson v "$2" '.[$k] = $v' <<<"$SHIP_FACTS")
+}
+
+ship_ask() { # ship_ask <reason>: hands the ship to the agent, saying first what it already did
+  local why
+  why=$(jq -r --arg r "$1" '(if .committed then "committed \(.committed)\(if .pushed then " and pushed it" else "" end); "
+    elif .pushed then "pushed \(.head); " else "" end) + $r' <<<"$SHIP_FACTS")
+  EVENT_REASON="$why"
+  jq -n --arg r "$why" --argjson f "$SHIP_FACTS" '{result: "ask", reason: $r} + $f'
+  exit 2
+}
+
+ship_guard() { # ship_guard <tree> <command...>: asks git-guard about the command keel ship is about to run
+  local out why
+  out=$(jq -n --arg c "$(printf '%q ' "${@:2}")" --arg d "$1" \
+    '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}, cwd: $d}' | hook_git_guard) ||
+    die "git-guard failed on: ${*:2}"
+  why=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out") || die "git-guard gave output it cannot read on: ${*:2}"
+  [[ -z "$why" ]] || ship_ask "git-guard refused \`${*:2}\`: $why"
+}
+
+ship_cmd() { # ship <commit|push|pr> [--files <path>...] [--message <file>] [--title <text>] [--body <file>] [--skip-verify <reason>]
+  local usage="usage: keel ship commit --files <path>... --message <file> | push [--files <path>... --message <file>] [--skip-verify <reason>] | pr [same as push] --title <text> --body <file>"
+  local verb="${1:-}" message="" title="" body="" skip="" tree branch dir contracted=false sha out staged extra base prs open url f
+  local -a files=() draft=()
+  event_start "ship${1:+ $1}" "$@"
+  case "$verb" in commit | push | pr) shift ;; *) die "$usage" ;; esac
+  while (($#)); do
+    case "$1" in
+    --files)
+      shift
+      while (($#)) && [[ "$1" != --* ]]; do files+=("$1") && shift; done
+      ;;
+    --message | --title | --body | --skip-verify)
+      (($# >= 2)) || die "$usage"
+      case "$1" in --message) message="$2" ;; --title) title="$2" ;; --body) body="$2" ;; --skip-verify) skip="$2" ;; esac
+      shift 2
+      ;;
+    *) die "$usage" ;;
+    esac
+  done
+  [[ "$verb" == pr || -z "$title$body" ]] || die "$usage"
+  [[ "$verb" != commit || -z "$skip" ]] || die "$usage"
+  [[ ${#files[@]} -eq 0 || -n "$message" ]] || die "--files needs --message <file>"
+  [[ -z "$message" || ${#files[@]} -gt 0 ]] || die "--message needs --files"
+  [[ "$verb" != commit || ${#files[@]} -gt 0 ]] || die "$usage"
+  # git commit and gh run from the tree's top, so a path given from a subdirectory is made absolute first.
+  [[ -z "$message" || "$message" == /* ]] || message="$PWD/$message"
+  [[ -z "$body" || "$body" == /* ]] || body="$PWD/$body"
+  [[ -z "$message" || -f "$message" ]] || die "no such message file: $message"
+  tree=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repository"
+  branch=$(git -C "$tree" branch --show-current)
+  ship_fact branch "$(jq -cn --arg b "$branch" '$b')"
+  [[ -n "$branch" ]] || ship_ask "HEAD is detached: ship from a branch"
+  if protected_for "$tree" | grep -qxF "$branch"; then ship_ask "$branch is protected: nothing ships from it"; fi
+  dir=$(run_dir "$tree")
+  if run_holding "$tree" >/dev/null && [[ -f "$dir/contract.md" ]]; then contracted=true; fi
+  [[ "$contracted" == false || -z "$skip" ]] || ship_ask "a contracted run cannot skip verifying"
+  [[ "$verb" == commit ]] || git -C "$tree" remote get-url origin >/dev/null 2>&1 || ship_ask "the repository has no origin to push to"
+
+  # For a PR, everything about it is settled before anything is committed or
+  # pushed: the base, a PR the branch already has, and the title and body.
+  if [[ "$verb" == pr ]]; then
+    base=$(base_for "$tree")
+    if [[ -z "$base" ]]; then
+      base=$(git -C "$tree" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || ship_ask "neither the pack nor origin names a base for the PR"
+      base=${base#origin/}
+    fi
+    ship_fact base "$(jq -R . <<<"$base")"
+    prs=$(cd "$tree" && gh pr list --head "$branch" --state all --json number,state,url,baseRefName) || die "gh could not list PRs from $branch"
+    ship_fact prs "$prs"
+    open=$(jq -r --arg b "$base" '[.[] | select(.state == "OPEN" and .baseRefName == $b)][0].url // empty' <<<"$prs")
+    if [[ -z "$open" ]]; then
+      [[ "$prs" == "[]" ]] || ship_ask "$branch already has a closed, merged or differently based PR"
+      [[ -n "$title" && -n "$body" ]] || die "$usage"
+      [[ -f "$body" ]] || die "no such body file: $body"
+    fi
+  fi
+
+  # Commit exactly the named files, and nothing staged beside them.
+  if ((${#files[@]})); then
+    if grep -qi '^co-authored-by:' "$message"; then ship_ask "the message has a co-author line, which the git rules forbid"; fi
+    # Files, never a directory, which would stage whatever lies under it.
+    for f in "${files[@]}"; do
+      [[ ! -d "$f" ]] || ship_ask "--files names a directory, $f: name each file this work touched"
+    done
+    # Anything already staged that --files does not cover would go into the commit.
+    # --no-renames, so a staged rename shows its deletion as well as its new name.
+    extra=$(git diff --cached --no-renames --name-only | grep -vxF -f <(GIT_LITERAL_PATHSPECS=1 git diff --cached --no-renames --name-only -- "${files[@]}" 2>/dev/null) || true)
+    [[ -z "$extra" ]] || ship_ask "files outside --files are already staged: $(paste -sd' ' <<<"$extra")"
+    # Asked before staging, so a refusal leaves the index as it was.
+    ship_guard "$tree" git commit -F "$message"
+    # Literally, so a pathspec such as :/ or * cannot stage what was not named.
+    GIT_LITERAL_PATHSPECS=1 git add -- "${files[@]}" || die "git add refused: ${files[*]}"
+    staged=$(git diff --cached --name-only)
+    if [[ -n "$staged" ]]; then
+      git -C "$tree" commit -q -F "$message" || die "git commit failed"
+      ship_fact committed "$(git -C "$tree" rev-parse HEAD | jq -R .)"
+    elif [[ "$verb" == commit ]]; then
+      ship_ask "nothing to commit in $(paste -sd' ' < <(printf '%s\n' "${files[@]}"))"
+    fi
+  fi
+  sha=$(git -C "$tree" rev-parse HEAD)
+  ship_fact head "$(jq -R . <<<"$sha")"
+  if [[ "$verb" == commit ]]; then
+    jq -n --argjson f "$SHIP_FACTS" '{result: "committed"} + $f'
+    return 0
+  fi
+
+  # The verdict gate: a pass for this code, unless the user skipped it.
+  if [[ -n "$skip" ]]; then
+    ship_fact verify "$(jq -cn --arg r "$skip" '"skipped: \($r)"')"
+  elif ! out=$(cd "$tree" && verdict 2>&1); then
+    ship_fact verdict "$(jq -Rs . <<<"$out")"
+    ship_ask "no passing verdict for this code: run /verify, then keel ship $verb again"
+  else
+    ship_fact verify '"pass"'
+  fi
+  if git -C "$tree" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null &&
+    [[ "$(git -C "$tree" rev-list --count "origin/$branch..HEAD")" == 0 && "$verb" == push ]]; then
+    ship_ask "nothing to push: origin/$branch is already at HEAD"
+  fi
+  ship_guard "$tree" git push -u origin "HEAD:$branch"
+  out=$(git -C "$tree" push -q -u origin "HEAD:$branch" 2>&1) || die "git push failed: $out"
+  ship_fact pushed true
+  if [[ "$verb" == push ]]; then
+    jq -n --argjson f "$SHIP_FACTS" '{result: "pushed"} + $f'
+    return 0
+  fi
+
+  # The PR into the base: one already open is left as it is.
+  if [[ -n "$open" ]]; then
+    jq -n --argjson f "$SHIP_FACTS" --arg u "$open" '{result: "pushed", pr: $u} + $f'
+    return 0
+  fi
+  [[ "$contracted" == false ]] || draft=(--draft)
+  # No --head: the push above set the branch's upstream, and git-guard refuses --head in a run.
+  ship_guard "$tree" gh pr create "${draft[@]}" --base "$base" --title "$title" --body-file "$body"
+  url=$(cd "$tree" && gh pr create "${draft[@]}" --base "$base" --title "$title" --body-file "$body" 2>&1) ||
+    die "gh could not open the PR: $url"
+  jq -n --argjson f "$SHIP_FACTS" --arg u "$(tail -1 <<<"$url")" '{result: "opened", pr: $u} + $f'
 }
 
 merge_fact() { # merge_fact <key> <json>
@@ -1710,20 +2063,29 @@ base) base_for "${1:-$PWD}" ;;
 protected) protected_for "${1:-$PWD}" ;;
 provision) provision "${1:-$PWD}" ;;
 sweep) sweep "${1:-}" ;;
-run) run "$@" ;;
+run) event_start "run${1:+ $1}" "$@"; run "$@" ;;
 status) status "$@" ;;
 stats) exec python3 -I "$LIB_DIR/stats.py" "$STATE_DIR" "$HOME/.keel/claude" "$METHOD_DIR" "$@" ;;
 dash) dash "$@" ;;
-verdict) verdict "$@" ;;
+verdict) event_start verdict "$@"; verdict "$@" ;;
+verify-brief)
+  event_start verify-brief "$@"
+  (($# == 0)) || die "usage: keel verify-brief"
+  verify_brief
+  ;;
 merge) merge_pr "$@" ;;
+ship) ship_cmd "$@" ;;
+issue) issue_cmd "$@" ;;
 reflect) reflect "$@" ;;
 eval) exec "$KEEL_ROOT/learning/eval.sh" "$@" ;;
-linear) linear "$@" ;;
+linear) event_start "linear${1:+ $1}" "$@"; linear "$@" ;;
 template)
   if [[ -n "${1:-}" ]]; then template_for "$1" "${2:-$PWD}"; else template_names "$PWD"; fi
   ;;
 e2e) e2e "$@" ;;
 stack)
+  # Logged here, not in stack_down or stack_release, which hooks call directly.
+  event_start "stack${1:+ $1}" "$@"
   case "${1:-}" in
   up) shift && stack_up "$PWD" "$@" ;;
   down) stack_down "$PWD" ;;
