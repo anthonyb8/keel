@@ -1997,11 +1997,16 @@ out=$(fill "$(slice '{"name":"id","type":"bigint","fk":[{"table":"public.u","col
 refute "a comment cannot open or close a tag in the page's data" grep -q '<' <<<"$out"
 eq "and reads back as it was written" "<!-- <script> </script>" "$(jq -r '.tables[0].comment' <<<"$out")"
 check "the title is escaped" grep -qx '<title>A &amp; B</title>' "$T/schema.html"
-for bad in '' '[]' 'null' '{}' '{"tables":[]}' "$(slice '{"name":"id","type":"bigint","fk":{"table":"public.u","column":"id"}}')" "$(slice '{"name":"id","type":"bigint","fk":[{"column":"id"}]}')"; do
+for bad in '' '[]' 'null' '{}' '{"tables":[]}' "$(slice '{"name":"id","type":"bigint","fk":{"table":"public.u","column":"id"}}')" "$(slice '{"name":"id","type":"bigint","fk":[{"column":"id"}]}')" \
+  '{"tables":[{"id":"a.t","schema":"a","name":"t","policies":"members"}]}' '{"tables":[{"id":"a.t","schema":"a","name":"t","change":"add"}]}' \
+  '{"tables":[{"id":"a.t","schema":"a","name":"t"},{"id":"a.t","schema":"a","name":"t"}]}' '{"tables":[{"id":"a.t","schema":"a","name":"t","x":NaN}]}' \
+  '{"tables":[{"id":"a.t","schema":"a","name":"t","x":1e999}]}' '{"title":"\ud800","tables":[{"id":"a.t","schema":"a","name":"t"}]}'; do
   out=$(fill "$bad")
   eq "fill.py names the file and writes no page for ${bad:-an empty file}" "1 no" \
     "$(grep -c "^fill.py: $T/schema.json: " <<<"$out") $([[ -e "$T/schema.html" ]] && echo yes || echo no)"
 done
+out=$(fill "$(printf '[%.0s' {1..100000})")
+eq "nor for nesting too deep to read" "1 no" "$(grep -c "^fill.py: $T/schema.json: " <<<"$out") $([[ -e "$T/schema.html" ]] && echo yes || echo no)"
 check "fill.py with no arguments prints its usage" grep -q '^usage: fill.py' <<<"$(python3 -I "$SC/fill.py" 2>&1)"
 
 section "release versions"

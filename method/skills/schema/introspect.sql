@@ -12,21 +12,21 @@ params as (
          regexp_split_to_array(nullif(btrim(:'tables'), ''), '\s*,\s*') as tables
 ),
 rels as (
-  select c.oid, n.nspname as schema, c.relname as name, c.relkind, c.relrowsecurity as rls,
+  select c.oid, n.nspname as schema, c.relname as name, c.relkind, c.relrowsecurity as rls, c.relispartition,
          obj_description(c.oid, 'pg_class') as comment
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
-  where c.relkind in ('r', 'p', 'v', 'm', 'f') and not c.relispartition
+  where c.relkind in ('r', 'p', 'v', 'm', 'f')
 ),
 focus as (
   select r.oid from rels r, params p
   where r.schema = any(p.schemas)
-    and (p.tables is null or r.name = any(p.tables) or r.schema || '.' || r.name = any(p.tables))
+    and ((p.tables is null and not r.relispartition) or r.name = any(p.tables) or r.schema || '.' || r.name = any(p.tables))
 ),
 fks as (
   select con.conrelid, con.confrelid, con.conkey, k.attnum, k.fattnum, con.confdeltype
   from pg_constraint con
   cross join lateral unnest(con.conkey, con.confkey) as k(attnum, fattnum)
-  where con.contype = 'f'
+  where con.contype = 'f' and con.conparentid = 0 -- not the copy a partition inherits
 ),
 shown as (
   select oid, true as focus from focus

@@ -9,6 +9,7 @@ import json
 import sys
 from typing import NoReturn
 
+CHANGES = (None, "added", "changed", "removed")
 Json = dict[str, "Json"] | list["Json"] | str | int | float | bool | None
 
 
@@ -34,6 +35,21 @@ def entries(owner: Json, key: str, where: str, required: tuple[str, ...]) -> lis
     return found
 
 
+def no_constant(name: str) -> NoReturn:
+    raise ValueError(f"{name} is not a JSON value")
+
+
+def distinct(names: list[Json], where: str) -> None:
+    repeated = sorted({str(n) for n in names if names.count(n) > 1})
+    if repeated:
+        fail(f"{where}: more than one {', '.join(repeated)}")
+
+
+def check_change(item: dict[str, Json], where: str) -> None:
+    if item.get("change") not in CHANGES:
+        fail(f"{where}: change must be added, changed or removed, found {item['change']!r}")
+
+
 def check(data: Json, path: str) -> int:
     """Stop on anything the canvas cannot draw; return how many tables there are."""
     if not isinstance(data, dict):
@@ -43,9 +59,16 @@ def check(data: Json, path: str) -> int:
         fail(f"{path}: no tables; check the schemas and tables given to introspect.sql")
     for table in tables:
         where = f"{path}: {table['id']}"
-        for column in entries(table, "columns", where, ("name", "type")):
+        check_change(table, where)
+        entries(table, "policies", where, ("name", "cmd"))
+        columns = entries(table, "columns", where, ("name", "type"))
+        distinct([c["name"] for c in columns], where)
+        for column in columns:
+            check_change(column, f"{where}.{column['name']}")
             entries(column, "fk", f"{where}.{column['name']}", ("table", "column"))
-    for enum in entries(data, "enums", path, ("id", "name")):
+    enums = entries(data, "enums", path, ("id", "name"))
+    distinct([item["id"] for item in tables + enums], path)
+    for enum in enums:
         values = enum.get("values")
         if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
             fail(f"{path}: {enum['id']}: values must be a list of strings")
@@ -69,8 +92,8 @@ def main() -> None:
     template_path, data_path, out_path = sys.argv[1:]
     page = read(template_path)
     try:
-        data: Json = json.loads(read(data_path))
-    except json.JSONDecodeError as e:
+        data: Json = json.loads(read(data_path), parse_constant=no_constant)
+    except (ValueError, RecursionError) as e:
         fail(f"{data_path}: not JSON: {e}")
     count = check(data, data_path)
     for marker in ("__SCHEMA_TITLE__", "__SCHEMA_JSON__"):
@@ -78,7 +101,11 @@ def main() -> None:
             fail(f"{template_path}: expected one {marker}, found {page.count(marker)}")
 
     # Inside a <script>, "</" ends the block and "<!--" changes how the rest is parsed, so no "<" is left.
-    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
+    try:
+        payload = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":")).replace("<", "\\u003c")
+        payload.encode("utf-8")
+    except (ValueError, RecursionError) as e:
+        fail(f"{data_path}: a value the page cannot hold: {e}")
     title = data.get("title") if isinstance(data, dict) else None
     page = page.replace("__SCHEMA_TITLE__", html.escape(title if isinstance(title, str) and title else "Schema"))
     page = page.replace("__SCHEMA_JSON__", payload)

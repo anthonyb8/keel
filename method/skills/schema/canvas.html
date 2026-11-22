@@ -288,8 +288,8 @@ button { font: inherit; color: inherit; }
     [/^timestamp\((\d)\) with time zone$/, "timestamptz($1)"], [/^timestamp with time zone$/, "timestamptz"],
     [/^timestamp\((\d)\) without time zone$/, "timestamp($1)"], [/^timestamp without time zone$/, "timestamp"],
     [/^time with time zone$/, "timetz"], [/^time without time zone$/, "time"],
-    [/^character varying/, "varchar"], [/^character\b/, "char"], [/^double precision/, "float8"],
-    [/^boolean/, "bool"], [/^integer/, "int4"], [/^bigint/, "int8"], [/^smallint/, "int2"],
+    [/^character varying(?=\(|$)/, "varchar"], [/^character(?=\(|$)/, "char"], [/^double precision$/, "float8"],
+    [/^boolean$/, "bool"], [/^integer$/, "int4"], [/^bigint$/, "int8"], [/^smallint$/, "int2"],
   ];
   const shortType = (t) => { t = String(t ?? ""); const arr = t.endsWith("[]"); let b = arr ? t.slice(0, -2) : t; for (const [re, s] of SHORT) if (re.test(b)) { b = b.replace(re, s); break; } return b.replace(/^[a-z_]+\./, "") + (arr ? "[]" : ""); };
 
@@ -321,9 +321,8 @@ button { font: inherit; color: inherit; }
   }
 
   // ---------- Saved view (per viewer, best effort) ----------
-  const fingerprint = [...nodes.keys()].sort().join("|");
-  let hash = 5381; for (let i = 0; i < fingerprint.length; i++) hash = ((hash << 5) + hash + fingerprint.charCodeAt(i)) | 0;
-  const KEY = "schema-canvas:v2:" + (hash >>> 0).toString(36);
+  // An Artifact has its own storage, so one key holds its layout, and a table added later leaves the rest where they were.
+  const KEY = "schema-canvas:v3";
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch { return null; } };
   const saved = load();
   const store = () => { try { localStorage.setItem(KEY, JSON.stringify({ pos, folded, view, showNeighbours })); } catch { /* storage blocked: the canvas still works */ } };
@@ -436,7 +435,7 @@ button { font: inherit; color: inherit; }
   const visible = (id) => showNeighbours || !(els.get(id).neighbour || enumUsers.get(id)?.every((u) => els.get(u).neighbour));
 
   // ---------- View ----------
-  const zoomLevels = { min: 0.2, max: 2 };
+  const zoomLevels = { min: 0.03, max: 2 };
   function applyView() {
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
     let step = 20 * view.z;
@@ -462,22 +461,42 @@ button { font: inherit; color: inherit; }
       x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
       x1 = Math.max(x1, p.x + el.offsetWidth); y1 = Math.max(y1, p.y + el.offsetHeight);
     }
-    const r = canvas.getBoundingClientRect(), pad = 32;
-    let z = Math.min(1, Math.max(zoomLevels.min, Math.min((r.width - pad * 2) / (x1 - x0), (r.height - pad * 2) / (y1 - y0))));
-    if (readable && z < 0.55) {
+    const r = canvas.getBoundingClientRect(), legend = $("legend"), key = legend.getBoundingClientRect();
+    const into = (left) => {
+      const pad = 32, width = r.width - left;
+      const z = Math.min(1, Math.max(zoomLevels.min, Math.min((width - pad * 2) / (x1 - x0), (r.height - pad * 2) / (y1 - y0))));
+      view = { z, x: left + (width - (x1 - x0) * z) / 2 - x0 * z, y: Math.max(pad, (r.height - (y1 - y0) * z) / 2) - y0 * z };
+    };
+    const underKey = () => ids.some((id) => {
+      const { el } = els.get(id), x = r.left + pos[id].x * view.z + view.x, y = r.top + pos[id].y * view.z + view.y;
+      return x < key.right && x + el.offsetWidth * view.z > key.left && y < key.bottom && y + el.offsetHeight * view.z > key.top;
+    });
+    into(0);
+    if (readable && view.z < 0.55) {
       // Too small to read: open at a readable zoom on the focus tables instead of the whole slice.
-      z = 0.55;
       const focus = ids.filter((id) => !els.get(id).neighbour);
       const fx = Math.min(...focus.map((id) => pos[id].x)), fy = Math.min(...focus.map((id) => pos[id].y));
-      view = { z, x: pad - fx * z, y: pad - fy * z };
-    } else {
-      view = { z, x: (r.width - (x1 - x0) * z) / 2 - x0 * z, y: Math.max(pad, (r.height - (y1 - y0) * z) / 2) - y0 * z };
+      view = { z: 0.55, x: 32 - fx * 0.55, y: 32 - fy * 0.55 };
+    } else if (legend.open && underKey()) {
+      // Fit beside the key, or shut it where there is no room for both.
+      const left = key.right - r.left;
+      if (r.width - left >= 480) into(left);
+      else legend.open = false;
     }
     applyView();
   }
 
   // ---------- Auto layout: referenced tables left of the tables that reference them ----------
+  // A hidden card measures nothing. layout() hides it again before the next paint.
+  const showAll = () => { for (const { el } of els.values()) el.hidden = false; };
+  function stack(ids, x, y) {
+    for (const id of ids) {
+      pos[id] = { x, y };
+      y += els.get(id).el.offsetHeight + 48;
+    }
+  }
   function tidy() {
+    showAll();
     const ids = [...els.keys()].filter(visible);
     const targets = new Map(ids.map((id) => [id, new Set()]));
     for (const e of edges) if (e.kind === "fk" && e.from !== e.to && targets.has(e.from) && targets.has(e.to)) targets.get(e.from).add(e.to);
@@ -524,13 +543,7 @@ button { font: inherit; color: inherit; }
     }
     // Tables hidden for now wait in a column to the left, clear of the ones just placed.
     const waiting = [...els.keys()].filter((id) => !visible(id));
-    for (const id of waiting) els.get(id).el.hidden = false; // to measure; layout() hides them again before a paint
-    const wide = Math.max(0, ...waiting.map((id) => els.get(id).el.offsetWidth));
-    let y = 0;
-    for (const id of waiting) {
-      pos[id] = { x: -wide - 140, y };
-      y += els.get(id).el.offsetHeight + 48;
-    }
+    stack(waiting, -140 - Math.max(0, ...waiting.map((id) => els.get(id).el.offsetWidth)), 0);
     layout();
   }
 
@@ -635,7 +648,7 @@ button { font: inherit; color: inherit; }
     el.addEventListener("focusin", () => { if (document.activeElement.matches(":focus-visible")) reveal(id); });
     const toggleFold = () => { folded[id] = !folded[id]; applyFold(id); layout(); store(); };
     el.querySelector(".fold").addEventListener("click", toggleFold);
-    el.querySelector(".more").addEventListener("click", toggleFold);
+    el.querySelector(".more").addEventListener("click", () => { toggleFold(); el.querySelector(".fold").focus(); });
   }
 
   // Tabbing to a table pans it into view.
@@ -754,14 +767,20 @@ button { font: inherit; color: inherit; }
     showNeighbours = state?.showNeighbours ?? true;
     $("neighbours").setAttribute("aria-pressed", String(showNeighbours));
     selected = null; hover = null;
-    const baked = [...els.keys()].every((id) => Number.isFinite(els.get(id).node.x) && Number.isFinite(els.get(id).node.y));
+    showAll();
+    const at = (p) => Number.isFinite(p?.x) && Number.isFinite(p?.y) ? { x: p.x, y: p.y } : null;
+    const unplaced = [];
     for (const id of els.keys()) {
-      const n = els.get(id).node, s = state?.pos?.[id];
-      pos[id] = s ? { ...s } : Number.isFinite(n.x) && Number.isFinite(n.y) ? { x: n.x, y: n.y } : { x: 0, y: 0 };
+      const p = at(state?.pos?.[id]) || at(els.get(id).node);
+      if (p) pos[id] = p; else unplaced.push(id);
     }
-    const allSaved = state?.pos && [...els.keys()].every((id) => state.pos[id]);
-    if (!allSaved && !baked) tidy();
-    else layout();
+    if (unplaced.length === els.size) tidy();
+    else {
+      // What no layout places, such as an enum or a table added since, goes to the right of everything it does.
+      const placed = [...els.keys()].filter((id) => !unplaced.includes(id));
+      stack(unplaced, Math.max(...placed.map((id) => pos[id].x + els.get(id).el.offsetWidth)) + 140, Math.min(...placed.map((id) => pos[id].y)));
+      layout();
+    }
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (state?.view) { view = state.view; applyView(); } else fit(true);
     }));

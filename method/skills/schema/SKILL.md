@@ -100,7 +100,7 @@ Republish the same file path, so the link stays, for each change the user asks f
 
 - The layout a user drags lives only in their browser.
   **Copy layout** puts it on their clipboard; when they paste it to you, copy each `x`, `y` into the JSON and republish.
-  Anyone who already moved tables on that page keeps their own layout until they press **Reset**.
+  Anyone who already moved tables on that page keeps their own layout until they press **Reset**; a table added since appears to its right.
 - A different slice of the same schema is a new Artifact, with its own file path.
 - When the slice came from an issue, offer to add the link to it with `keel linear comment`; do not add it unasked.
 
