@@ -67,7 +67,7 @@ What `introspect.sql` returns, for writing it by hand:
     "columns": [
       {"name": "id", "type": "bigint", "nullable": false, "pk": true, "identity": true},
       {"name": "customer_id", "type": "bigint", "nullable": false,
-       "fk": [{"table": "public.customers", "column": "id", "onDelete": "restrict"}]},
+       "fk": [{"table": "public.customers", "column": "id", "onDelete": "restrict", "one": false, "optional": false}]},
       {"name": "status", "type": "invoice_status", "nullable": false, "default": "'draft'::invoice_status",
        "enum": "public.invoice_status"}
     ]
@@ -76,6 +76,7 @@ What `introspect.sql` returns, for writing it by hand:
 }
 ```
 
+`one` on a foreign key is true when its columns are unique together, and `optional` when any of them is nullable.
 `focus: false` marks a neighbour; `unique`, `generated` and `comment` are optional on a column.
 
 ## 4. Build it
@@ -87,6 +88,8 @@ No listed type draws a schema, so the page is this template, published as a plai
 python3 -I ~/.keel/claude/skills/schema/fill.py ~/.keel/claude/skills/schema/canvas.html \
   "$CLAUDE_JOB_DIR/tmp/schema.json" "$CLAUDE_JOB_DIR/tmp/<slug>.html"
 ```
+
+It stops with the reason when the JSON is not one the canvas can draw, such as a misspelt table leaving no tables at all.
 
 Publish that file with `icon: "database"` and a one-sentence `description` naming the slice.
 Keep the JSON and the page out of the repository.

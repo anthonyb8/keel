@@ -6,10 +6,10 @@
 -- tables:  comma-separated tables (name or schema.name) to focus on; empty for every table in schemas.
 -- Tables one foreign key away from the focus come back as neighbours (focus: false), in any schema.
 \set ON_ERROR_STOP on
-with
+with recursive
 params as (
-  select string_to_array(:'schemas', ',') as schemas,
-         string_to_array(nullif(:'tables', ''), ',') as tables
+  select regexp_split_to_array(btrim(:'schemas'), '\s*,\s*') as schemas,
+         regexp_split_to_array(nullif(btrim(:'tables'), ''), '\s*,\s*') as tables
 ),
 rels as (
   select c.oid, n.nspname as schema, c.relname as name, c.relkind, c.relrowsecurity as rls,
@@ -23,7 +23,7 @@ focus as (
     and (p.tables is null or r.name = any(p.tables) or r.schema || '.' || r.name = any(p.tables))
 ),
 fks as (
-  select con.conrelid, con.confrelid, k.attnum, k.fattnum, con.confdeltype
+  select con.conrelid, con.confrelid, con.conkey, k.attnum, k.fattnum, con.confdeltype
   from pg_constraint con
   cross join lateral unnest(con.conkey, con.confkey) as k(attnum, fattnum)
   where con.contype = 'f'
@@ -37,6 +37,26 @@ shown as (
     select conrelid from fks where confrelid in (select oid from focus)
   ) f where f.oid not in (select oid from focus)
 ),
+-- The key columns of each index that makes every row unique: not a partial or expression index,
+-- and without the columns an INCLUDE carries along.
+uniques as (
+  select i.indrelid, i.indisprimary, (i.indkey::int2[])[0:i.indnkeyatts - 1] as key
+  from pg_index i
+  where i.indisunique and i.indisvalid and i.indpred is null and i.indexprs is null
+),
+-- Each type with the one beneath it: a domain's base, an array's element, down to the plain type.
+bases as (
+  select oid, oid as base from pg_type
+  union all
+  select b.oid, case when t.typtype = 'd' then t.typbasetype else t.typelem end
+  from bases b join pg_type t on t.oid = b.base
+  where t.typtype = 'd' or (t.typcategory = 'A' and t.typelem <> 0)
+),
+enum_of as (
+  select b.oid, n.nspname || '.' || t.typname as enum
+  from bases b join pg_type t on t.oid = b.base join pg_namespace n on n.oid = t.typnamespace
+  where t.typtype = 'e'
+),
 cols as (
   select a.attrelid, a.attnum, a.attname as name,
          format_type(a.atttypid, a.atttypmod) as type,
@@ -45,14 +65,13 @@ cols as (
          a.attidentity <> '' as identity,
          a.attgenerated <> '' as generated,
          col_description(a.attrelid, a.attnum) as comment,
-         case when t.typtype = 'e' then tn.nspname || '.' || t.typname end as enum,
-         exists (select 1 from pg_index i where i.indrelid = a.attrelid and i.indisprimary
-                 and a.attnum = any(i.indkey)) as pk,
-         exists (select 1 from pg_index i where i.indrelid = a.attrelid and i.indisunique
-                 and not i.indisprimary and i.indnatts = 1 and i.indkey[0] = a.attnum) as "unique"
+         eo.enum,
+         exists (select 1 from uniques u where u.indrelid = a.attrelid and u.indisprimary
+                 and a.attnum = any(u.key)) as pk,
+         exists (select 1 from uniques u where u.indrelid = a.attrelid and not u.indisprimary
+                 and u.key <@ array[a.attnum]) as "unique"
   from pg_attribute a
-  join pg_type t on t.oid = a.atttypid
-  join pg_namespace tn on tn.oid = t.typnamespace
+  left join enum_of eo on eo.oid = a.atttypid
   left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
   where a.attrelid in (select oid from shown) and a.attnum > 0 and not a.attisdropped
 ),
@@ -61,6 +80,9 @@ refs as (
          json_agg(json_build_object(
            'table', r.schema || '.' || r.name,
            'column', fa.attname,
+           'one', exists (select 1 from uniques u where u.indrelid = f.conrelid and u.key <@ f.conkey),
+           'optional', exists (select 1 from pg_attribute k where k.attrelid = f.conrelid
+                               and k.attnum = any(f.conkey) and not k.attnotnull),
            'onDelete', case f.confdeltype when 'c' then 'cascade' when 'n' then 'set null'
                          when 'd' then 'set default' when 'r' then 'restrict' else 'no action' end
          )) as fk

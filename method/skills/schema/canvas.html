@@ -84,7 +84,7 @@ button { font: inherit; color: inherit; }
 
 /* Canvas */
 .canvas {
-  position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: grab;
+  position: relative; flex: 1; min-height: 0; overflow: hidden; overflow: clip; touch-action: none; cursor: grab;
   background-color: var(--bg);
   background-image: radial-gradient(circle, var(--dot) 1px, transparent 1.2px);
   background-size: 20px 20px;
@@ -100,7 +100,7 @@ button { font: inherit; color: inherit; }
 
 /* Table cards */
 .card {
-  position: absolute; width: max-content; min-width: 220px; max-width: 360px; background: var(--surface);
+  position: absolute; width: max-content; min-width: 220px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow);
   cursor: grab; user-select: none; -webkit-user-select: none;
   transition: opacity 0.15s ease, border-color 0.15s ease;
@@ -120,7 +120,7 @@ button { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--line); background: var(--surface-2); border-radius: 8px 8px 0 0;
 }
 .card.neighbour .head { background: transparent; }
-.tname { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tname { font-weight: 600; font-size: 13.5px; white-space: nowrap; }
 .tschema { color: var(--muted); font-weight: 400; }
 .chips { display: flex; gap: 4px; margin-left: auto; align-items: center; flex: none; }
 .chip {
@@ -140,11 +140,11 @@ button { font: inherit; color: inherit; }
 .card.folded .fold svg { transform: rotate(-90deg); }
 .note {
   padding: 6px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  width: 0; min-width: 100%; overflow-wrap: anywhere; /* wraps to the card the columns made, never widens it */
 }
 
 .row {
-  display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; grid-auto-rows: minmax(27px, auto);
+  display: grid; grid-template-columns: 16px minmax(max-content, 1fr) auto; grid-auto-rows: minmax(27px, auto);
   align-items: center; column-gap: 8px; padding: 0 12px 0 9px; border-left: 3px solid transparent;
   font-family: var(--font-data); font-size: 12px;
 }
@@ -154,7 +154,7 @@ button { font: inherit; color: inherit; }
 .row .ic svg { width: 13px; height: 13px; }
 .row .ic.pk { color: var(--chg); }
 .row .ic.fk { color: var(--accent); }
-.cname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cname { white-space: nowrap; }
 .row.pk .cname { font-weight: 500; }
 .ctype { color: var(--muted); white-space: nowrap; display: flex; gap: 5px; align-items: center; justify-self: end; }
 .ctype .q { color: var(--edge); }
@@ -333,6 +333,7 @@ button { font: inherit; color: inherit; }
   let view = { x: 40, y: 40, z: 1 };
   let showNeighbours = saved?.showNeighbours ?? true;
   let selected = null, hover = null;
+  const pointers = new Map(); // the pointers now down on the canvas
 
   // ---------- Header ----------
   const tables = [...nodes.values()].filter((n) => n.type === "table");
@@ -371,16 +372,16 @@ button { font: inherit; color: inherit; }
     `${c.name}: ${c.type}${c.nullable ? ", nullable" : ", not null"}`,
     c.pk && "primary key", c.unique && "unique", c.identity && "identity", c.generated && "generated",
     c.default != null && `default ${c.default}`,
-    ...(c.fk || []).map((f) => `references ${f.table}.${f.column}${f.onDelete && f.onDelete !== "no action" ? ` on delete ${f.onDelete}` : ""}`),
+    ...(c.fk || []).map((f) => `references ${f.table}.${f.column}${f.onDelete ? ` on delete ${f.onDelete}` : ""}`),
     c.was && `was ${c.was}`, c.comment,
   ].filter(Boolean).join("\n");
 
   // Each foreign key says what it points at on its own row, even when that table is not drawn.
   const relations = (n, c) => (c.fk || []).map((f) => {
     const target = f.table.startsWith(mainSchema + ".") ? f.table.slice(mainSchema.length + 1) : f.table;
-    const one = c.unique || (c.pk && n.columns.filter((k) => k.pk).length === 1);
-    const facts = [one ? "one to one" : "many to one", c.nullable && "optional",
-      f.onDelete && f.onDelete !== "no action" && `on delete ${f.onDelete}`].filter(Boolean).join(" · ");
+    const one = f.one ?? (c.unique || (c.pk && n.columns.filter((k) => k.pk).length === 1));
+    const facts = [one ? "one to one" : "many to one", (f.optional ?? c.nullable) && "optional",
+      f.onDelete && `on delete ${f.onDelete}`].filter(Boolean).join(" · ");
     return `<span class="rel"><span class="to">→ ${esc(target)}.${esc(f.column)}</span><br>${esc(facts)}</span>`;
   }).join("");
 
@@ -429,7 +430,10 @@ button { font: inherit; color: inherit; }
     more.hidden = !isFolded;
     more.textContent = `${plural(hideable.length, "more column")}`;
   }
-  const visible = (id) => showNeighbours || !els.get(id).neighbour;
+  const enumUsers = new Map();
+  for (const e of edges) if (e.kind === "enum") enumUsers.set(e.to, [...(enumUsers.get(e.to) || []), e.from]);
+  // With neighbours off, an enum only they use goes with them.
+  const visible = (id) => showNeighbours || !(els.get(id).neighbour || enumUsers.get(id)?.every((u) => els.get(u).neighbour));
 
   // ---------- View ----------
   const zoomLevels = { min: 0.2, max: 2 };
@@ -518,6 +522,15 @@ button { font: inherit; color: inherit; }
       }
       x += w + 140;
     }
+    // Tables hidden for now wait in a column to the left, clear of the ones just placed.
+    const waiting = [...els.keys()].filter((id) => !visible(id));
+    for (const id of waiting) els.get(id).el.hidden = false; // to measure; layout() hides them again before a paint
+    const wide = Math.max(0, ...waiting.map((id) => els.get(id).el.offsetWidth));
+    let y = 0;
+    for (const id of waiting) {
+      pos[id] = { x: -wide - 140, y };
+      y += els.get(id).el.offsetHeight + 48;
+    }
     layout();
   }
 
@@ -601,41 +614,13 @@ button { font: inherit; color: inherit; }
   function select(id) { selected = id; layout(); }
 
   for (const [id, { el }] of els) {
-    let drag = null;
-    el.addEventListener("pointerdown", (ev) => {
-      if (ev.button !== 0 || ev.target.closest("button")) return;
-      ev.stopPropagation();
-      drag = { sx: ev.clientX, sy: ev.clientY, ox: pos[id].x, oy: pos[id].y, moved: false };
-      el.setPointerCapture(ev.pointerId);
-    });
     el.addEventListener("pointermove", (ev) => {
-      if (drag) {
-        const dx = (ev.clientX - drag.sx) / view.z, dy = (ev.clientY - drag.sy) / view.z;
-        if (!drag.moved && Math.hypot(dx, dy) * view.z < 3) return;
-        if (!drag.moved) { drag.moved = true; el.classList.add("dragging"); }
-        pos[id] = { x: drag.ox + dx, y: drag.oy + dy };
-        layout();
-        return;
-      }
+      if (pointers.size) return;
       const row = ev.target.closest(".row");
       const next = row ? { id, col: row.dataset.col } : null;
       if (next?.col !== hover?.col || next?.id !== hover?.id) { hover = next; layout(); }
     });
-    const end = () => {
-      if (!drag) return;
-      if (drag.moved) {
-        pos[id] = { x: Math.round(pos[id].x / 8) * 8, y: Math.round(pos[id].y / 8) * 8 };
-        el.classList.remove("dragging");
-        store();
-      } else {
-        select(selected === id ? null : id);
-      }
-      drag = null;
-      layout();
-    };
-    el.addEventListener("pointerup", end);
-    el.addEventListener("pointercancel", end);
-    el.addEventListener("pointerleave", () => { if (!drag && hover) { hover = null; layout(); } });
+    el.addEventListener("pointerleave", () => { if (!pointers.size && hover) { hover = null; layout(); } });
     el.addEventListener("keydown", (ev) => {
       const step = ev.shiftKey ? 48 : 8;
       const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[ev.key];
@@ -647,24 +632,46 @@ button { font: inherit; color: inherit; }
         ev.preventDefault(); select(selected === id ? null : id);
       }
     });
+    el.addEventListener("focusin", () => { if (document.activeElement.matches(":focus-visible")) reveal(id); });
     const toggleFold = () => { folded[id] = !folded[id]; applyFold(id); layout(); store(); };
     el.querySelector(".fold").addEventListener("click", toggleFold);
     el.querySelector(".more").addEventListener("click", toggleFold);
   }
 
-  // Pan with one pointer, pinch-zoom with two.
-  const pointers = new Map();
-  let pan = null, pinch = null, wheelTimer = 0;
+  // Tabbing to a table pans it into view.
+  function reveal(id) {
+    const r = canvas.getBoundingClientRect(), pad = 32, { el } = els.get(id);
+    const into = (at, size, room) => size + pad * 2 > room || at < pad ? pad : Math.min(at, room - size - pad);
+    const x = into(pos[id].x * view.z + view.x, el.offsetWidth * view.z, r.width);
+    const y = into(pos[id].y * view.z + view.y, el.offsetHeight * view.z, r.height);
+    view = { ...view, x: x - pos[id].x * view.z, y: y - pos[id].y * view.z };
+    applyView();
+  }
+
+  // One pointer drags the table under it or pans the background; a second turns either into a pinch.
+  let drag = null, pan = null, pinch = null, wheelTimer = 0;
   canvas.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
     // Capturing the pointer here would swallow the click on a card's own buttons.
     if (ev.target.closest("button, .legend, .copybox, .toast")) return;
     pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     canvas.setPointerCapture(ev.pointerId);
-    if (pointers.size === 1) { pan = { sx: ev.clientX, sy: ev.clientY, ox: view.x, oy: view.y, moved: false }; canvas.classList.add("panning"); }
-    if (pointers.size === 2) {
+    if (pointers.size === 1) {
+      const id = ev.target.closest(".card")?.dataset.id;
+      if (id) drag = { id, sx: ev.clientX, sy: ev.clientY, from: { ...pos[id] }, moved: false };
+      else {
+        pan = { sx: ev.clientX, sy: ev.clientY, ox: view.x, oy: view.y, moved: false };
+        canvas.classList.add("panning");
+      }
+    } else if (pointers.size === 2) {
+      if (drag) {
+        pos[drag.id] = drag.from;
+        els.get(drag.id).el.classList.remove("dragging");
+        layout();
+      }
+      drag = pan = null;
       const [p, q] = [...pointers.values()];
-      pinch = { d: Math.hypot(p.x - q.x, p.y - q.y), z: view.z };
-      pan = null;
+      pinch = { d: Math.max(1, Math.hypot(p.x - q.x, p.y - q.y)), z: view.z };
     }
   });
   canvas.addEventListener("pointermove", (ev) => {
@@ -673,6 +680,13 @@ button { font: inherit; color: inherit; }
     if (pinch && pointers.size === 2) {
       const [p, q] = [...pointers.values()];
       zoomAt((p.x + q.x) / 2, (p.y + q.y) / 2, pinch.z * Math.hypot(p.x - q.x, p.y - q.y) / pinch.d);
+    } else if (drag) {
+      const dx = ev.clientX - drag.sx, dy = ev.clientY - drag.sy;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      drag.moved = true;
+      els.get(drag.id).el.classList.add("dragging");
+      pos[drag.id] = { x: drag.from.x + dx / view.z, y: drag.from.y + dy / view.z };
+      layout();
     } else if (pan) {
       const dx = ev.clientX - pan.sx, dy = ev.clientY - pan.sy;
       if (Math.hypot(dx, dy) > 3) pan.moved = true;
@@ -680,15 +694,23 @@ button { font: inherit; color: inherit; }
       applyView();
     }
   });
-  const panEnd = (ev) => {
-    if (!pointers.has(ev.pointerId)) return;
-    pointers.delete(ev.pointerId);
-    if (pan && !pan.moved && ev.type === "pointerup") select(null);
+  const release = (ev) => {
+    if (!pointers.delete(ev.pointerId)) return;
+    if (drag) {
+      const { id, moved } = drag;
+      els.get(id).el.classList.remove("dragging");
+      if (moved) {
+        pos[id] = { x: Math.round(pos[id].x / 8) * 8, y: Math.round(pos[id].y / 8) * 8 };
+        layout();
+      } else if (ev.type === "pointerup") select(selected === id ? null : id);
+    } else if (pan && !pan.moved && ev.type === "pointerup") select(null);
+    drag = pan = null;
     if (pointers.size < 2) pinch = null;
-    if (!pointers.size) { pan = null; canvas.classList.remove("panning"); store(); }
+    canvas.classList.remove("panning");
+    if (!pointers.size) store();
   };
-  canvas.addEventListener("pointerup", panEnd);
-  canvas.addEventListener("pointercancel", panEnd);
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
   canvas.addEventListener("wheel", (ev) => {
     if (ev.target.closest(".legend, .copybox")) return;
     ev.preventDefault();
