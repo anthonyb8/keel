@@ -1,0 +1,792 @@
+<title>__SCHEMA_TITLE__</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<!--
+  Schema canvas: the /schema skill's template. fill.py writes the slice's JSON into #schema-data and its
+  title into <title>; nothing else here changes from run to run.
+-->
+<style>
+/* Layout: a header bar over a full-bleed, pannable drafting canvas; tables are cards placed in world space. */
+:root {
+  --bg: #eef1f4;
+  --dot: #c9d1d9;
+  --surface: #ffffff;
+  --surface-2: #f5f7f9;
+  --fg: #16202b;
+  --muted: #5b6977;
+  --line: #d6dde4;
+  --accent: #2456c9;
+  --accent-soft: #e3ebfb;
+  --edge: #8a97a5;
+  --add: #1d7f47;
+  --add-soft: #e1f3e8;
+  --del: #b93a33;
+  --del-soft: #f8e3e1;
+  --chg: #9a6410;
+  --chg-soft: #f8edd8;
+  --shadow: 0 1px 2px rgb(22 32 43 / 0.06), 0 4px 14px rgb(22 32 43 / 0.06);
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1318; --dot: #26303a; --surface: #161d24; --surface-2: #1c242c; --fg: #e3e8ed;
+    --muted: #93a0ad; --line: #2b3640; --accent: #7ea3ff; --accent-soft: #1d2a45; --edge: #5f6d7b;
+    --add: #4cc283; --add-soft: #16301f; --del: #f0786e; --del-soft: #3a1c1a; --chg: #e2b357;
+    --chg-soft: #352a14; --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 18px rgb(0 0 0 / 0.3);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1318; --dot: #26303a; --surface: #161d24; --surface-2: #1c242c; --fg: #e3e8ed;
+  --muted: #93a0ad; --line: #2b3640; --accent: #7ea3ff; --accent-soft: #1d2a45; --edge: #5f6d7b;
+  --add: #4cc283; --add-soft: #16301f; --del: #f0786e; --del-soft: #3a1c1a; --chg: #e2b357;
+  --chg-soft: #352a14; --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 18px rgb(0 0 0 / 0.3);
+  color-scheme: dark;
+}
+
+html { height: 100%; box-sizing: border-box; }
+*, *::before, *::after { box-sizing: inherit; }
+body {
+  height: 100%; margin: 0; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 14px;
+}
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Header bar */
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px;
+  padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--surface); border-bottom: 1px solid var(--line); position: relative; z-index: 3;
+}
+.heading { min-width: 0; flex: 1 1 260px; display: grid; gap: 2px; }
+.heading h1 { margin: 0; font-size: 16px; font-weight: 600; text-wrap: balance; }
+.meta { color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.meta .src { font-family: var(--font-data); font-size: 12px; overflow-wrap: anywhere; }
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tool, .zoom button {
+  height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); cursor: pointer; font-size: 13px; white-space: nowrap;
+}
+.tool:hover, .zoom button:hover { background: var(--surface-2); border-color: var(--edge); }
+.tool[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.zoom { display: inline-flex; align-items: center; }
+.zoom button { width: 32px; padding: 0; font-size: 16px; line-height: 1; }
+.zoom button:first-child { border-radius: 6px 0 0 6px; }
+.zoom button:last-child { border-radius: 0 6px 6px 0; }
+.zoom output {
+  height: 32px; min-width: 52px; display: grid; place-items: center; border-block: 1px solid var(--line);
+  font-family: var(--font-data); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted);
+}
+
+/* Canvas */
+.canvas {
+  position: relative; flex: 1; min-height: 0; overflow: hidden; overflow: clip; touch-action: none; cursor: grab;
+  background-color: var(--bg);
+  background-image: radial-gradient(circle, var(--dot) 1px, transparent 1.2px);
+  background-size: 20px 20px;
+}
+.canvas.panning { cursor: grabbing; }
+.world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; max-width: none; overflow: visible; pointer-events: none; }
+
+.edge path { fill: none; stroke: var(--edge); stroke-width: 1.4; }
+.edge.enum path { stroke-dasharray: 4 4; }
+.edge.hot path { stroke: var(--accent); stroke-width: 2; }
+.edge.dim { opacity: 0.18; }
+
+/* Table cards */
+.card {
+  position: absolute; width: max-content; min-width: 220px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow);
+  cursor: grab; user-select: none; -webkit-user-select: none;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+.card.dragging { cursor: grabbing; z-index: 2; border-color: var(--edge); }
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
+.card.dim { opacity: 0.35; }
+.card.neighbour { background: var(--surface-2); border-style: dashed; }
+.card.enum { min-width: 160px; border-style: dashed; }
+.card.t-added { border-color: var(--add); box-shadow: 0 0 0 1px var(--add), var(--shadow); }
+.card.t-removed { opacity: 0.6; }
+.card.t-removed .tname { text-decoration: line-through; }
+.card.t-changed { border-color: var(--chg); }
+
+.head {
+  display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--line); background: var(--surface-2); border-radius: 8px 8px 0 0;
+}
+.card.neighbour .head { background: transparent; }
+.tname { font-weight: 600; font-size: 13.5px; white-space: nowrap; }
+.tschema { color: var(--muted); font-weight: 400; }
+.chips { display: flex; gap: 4px; margin-left: auto; align-items: center; flex: none; }
+.chip {
+  font: 500 10.5px var(--font-data); letter-spacing: 0.02em; padding: 2px 6px; border-radius: 4px;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+.chip.rls { color: var(--add); border-color: color-mix(in srgb, var(--add) 40%, var(--line)); }
+.chip.new { color: var(--add); background: var(--add-soft); border-color: transparent; }
+.chip.gone { color: var(--del); background: var(--del-soft); border-color: transparent; }
+.chip.edit { color: var(--chg); background: var(--chg-soft); border-color: transparent; }
+.fold {
+  width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; cursor: pointer;
+  display: grid; place-items: center; color: var(--muted); flex: none;
+}
+.fold:hover { background: var(--line); color: var(--fg); }
+.fold svg { width: 14px; height: 14px; transition: transform 0.15s ease; }
+.card.folded .fold svg { transform: rotate(-90deg); }
+.note {
+  padding: 6px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line);
+  width: 0; min-width: 100%; overflow-wrap: anywhere; /* wraps to the card the columns made, never widens it */
+}
+
+.row {
+  display: grid; grid-template-columns: 16px minmax(max-content, 1fr) auto; grid-auto-rows: minmax(27px, auto);
+  align-items: center; column-gap: 8px; padding: 0 12px 0 9px; border-left: 3px solid transparent;
+  font-family: var(--font-data); font-size: 12px;
+}
+.row + .row { border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.row.hot { background: var(--accent-soft); }
+.row .ic { display: grid; place-items: center; color: var(--muted); }
+.row .ic svg { width: 13px; height: 13px; }
+.row .ic.pk { color: var(--chg); }
+.row .ic.fk { color: var(--accent); }
+.cname { white-space: nowrap; }
+.row.pk .cname { font-weight: 500; }
+.ctype { color: var(--muted); white-space: nowrap; display: flex; gap: 5px; align-items: center; justify-self: end; }
+.ctype .q { color: var(--edge); }
+.ctype .was { text-decoration: line-through; opacity: 0.8; }
+.rel {
+  grid-column: 2 / -1; align-self: start; padding-bottom: 6px; color: var(--muted);
+  font-size: 11px; line-height: 1.4; overflow-wrap: anywhere;
+}
+.rel .to { color: var(--accent); }
+.row.c-removed .rel { text-decoration: line-through; }
+.flag { font-size: 9.5px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--line); line-height: 15px; }
+.row.c-added { border-left-color: var(--add); background: var(--add-soft); }
+.row.c-removed { border-left-color: var(--del); background: var(--del-soft); }
+.row.c-removed .cname, .row.c-removed .ctype > span:last-child { text-decoration: line-through; }
+.row.c-changed { border-left-color: var(--chg); background: var(--chg-soft); }
+.more {
+  display: block; width: 100%; height: 28px; border: 0; border-top: 1px solid var(--line);
+  background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; border-radius: 0 0 8px 8px;
+}
+.more:hover { color: var(--accent); background: var(--accent-soft); }
+
+/* Legend */
+.legend {
+  position: absolute; z-index: 2; max-width: calc(100% - 32px);
+  left: max(12px, calc(env(safe-area-inset-left, 0px) + 12px));
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow);
+  font-size: 12px;
+}
+.legend summary { padding: 8px 12px; cursor: pointer; font-weight: 500; list-style-position: inside; }
+.legend dl { margin: 0; padding: 0 12px 8px; display: grid; grid-template-columns: 44px 1fr; gap: 3px 10px; align-items: center; font-size: 11.5px; }
+.legend dt { display: grid; place-items: center; color: var(--muted); }
+.legend dt > span > svg { width: 13px; height: 13px; display: block; }
+.legend dd { margin: 0; color: var(--muted); }
+.legend svg { overflow: visible; }
+.legend .edge path { stroke: var(--fg); }
+.legend .sw { width: 22px; height: 14px; border-radius: 3px; border-left: 3px solid; }
+.hint { margin: 0; padding: 0 12px 10px; color: var(--muted); font-size: 11.5px; max-width: 260px; }
+
+.toast {
+  position: absolute; z-index: 4; left: 50%; transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); max-width: calc(100% - 32px);
+  padding: 9px 14px; border-radius: 8px; background: var(--fg); color: var(--bg); font-size: 13px; box-shadow: var(--shadow);
+}
+.copybox {
+  position: absolute; z-index: 4; inset: auto max(16px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 16px) auto;
+  width: min(420px, calc(100% - 32px)); display: grid; gap: 8px; padding: 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow);
+}
+.copybox p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.copybox textarea {
+  width: 100%; height: 140px; resize: vertical; font: 11.5px var(--font-data); color: var(--fg);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px;
+}
+.empty { margin: auto; max-width: 440px; padding: 24px; text-align: center; color: var(--muted); }
+.empty h2 { color: var(--fg); font-size: 16px; margin: 0 0 6px; }
+
+@media (max-width: 640px) {
+  .heading { flex-basis: 100%; }
+  .tool { padding: 0 9px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card, .fold svg { transition: none; }
+}
+</style>
+
+<header class="bar">
+  <div class="heading">
+    <h1 id="title">Schema</h1>
+    <div class="meta"><span id="summary"></span><span class="src" id="source"></span></div>
+  </div>
+  <div class="tools" role="toolbar" aria-label="Canvas">
+    <button class="tool" id="fit" type="button">Fit</button>
+    <button class="tool" id="tidy" type="button" title="Lay the tables out again by their foreign keys">Tidy</button>
+    <button class="tool" id="neighbours" type="button" aria-pressed="true" title="Tables one foreign key away from the slice">Neighbours</button>
+    <button class="tool" id="copy" type="button" title="Copy every table's position, to paste to Claude">Copy layout</button>
+    <button class="tool" id="reset" type="button" title="Forget your moves and start from the original layout">Reset</button>
+    <div class="zoom">
+      <button id="zout" type="button" aria-label="Zoom out">&minus;</button>
+      <output id="zlevel" aria-live="polite">100%</output>
+      <button id="zin" type="button" aria-label="Zoom in">+</button>
+    </div>
+  </div>
+</header>
+
+<main class="canvas" id="canvas" aria-label="Schema diagram. Drag a table to move it, drag the background to pan, scroll to zoom.">
+  <div class="world" id="world">
+    <svg class="edges" id="edges" aria-hidden="true"></svg>
+  </div>
+  <details class="legend" id="legend">
+    <summary>Key</summary>
+    <dl id="legend-list"></dl>
+    <p class="hint">Drag a table to move it. Click one to trace its links; hover a column to light up its line.</p>
+  </details>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <div class="copybox" id="copybox" hidden>
+    <p>Copying was blocked here. Select this text and copy it yourself, then paste it to Claude.</p>
+    <textarea id="copytext" readonly aria-label="Layout"></textarea>
+    <button class="tool" id="copyclose" type="button">Close</button>
+  </div>
+</main>
+
+<script type="application/json" id="schema-data">__SCHEMA_JSON__</script>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("canvas"), world = $("world"), svg = $("edges");
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const ICON = {
+    key: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="5.5" cy="10.5" r="3"/><path d="M7.7 8.3 13.5 2.5M11 5l2 2M12.5 3.5l1.5 1.5"/></svg>',
+    link: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.5 9.5l3-3M7 4.5l1.2-1.2a2.8 2.8 0 0 1 4 4L11 8.5M9 11.5l-1.2 1.2a2.8 2.8 0 0 1-4-4L5 7.5"/></svg>',
+    dot: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="1.6" fill="currentColor"/></svg>',
+    tag: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.5" cy="5.5" r="1" fill="currentColor"/></svg>',
+    chevron: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6l4 4 4-4"/></svg>',
+  };
+
+  // ---------- Data ----------
+  let data;
+  try { data = JSON.parse($("schema-data").textContent); } catch { data = null; }
+  if (!data || !Array.isArray(data.tables) || !data.tables.length) {
+    canvas.innerHTML = '<div class="empty"><h2>No schema in this page</h2><p>This canvas has no tables to draw. Ask Claude to fill it with a slice of your schema using /schema.</p></div>';
+    canvas.style.display = "flex";
+    document.querySelector(".tools").hidden = true;
+    return;
+  }
+
+  const SHORT = [
+    [/^timestamp\((\d)\) with time zone$/, "timestamptz($1)"], [/^timestamp with time zone$/, "timestamptz"],
+    [/^timestamp\((\d)\) without time zone$/, "timestamp($1)"], [/^timestamp without time zone$/, "timestamp"],
+    [/^time with time zone$/, "timetz"], [/^time without time zone$/, "time"],
+    [/^character varying(?=\(|$)/, "varchar"], [/^character(?=\(|$)/, "char"], [/^double precision$/, "float8"],
+    [/^boolean$/, "bool"], [/^integer$/, "int4"], [/^bigint$/, "int8"], [/^smallint$/, "int2"],
+  ];
+  const shortType = (t) => { t = String(t ?? ""); const arr = t.endsWith("[]"); let b = arr ? t.slice(0, -2) : t; for (const [re, s] of SHORT) if (re.test(b)) { b = b.replace(re, s); break; } return b.replace(/^[a-z_]+\./, "") + (arr ? "[]" : ""); };
+
+  const nodes = new Map();
+  for (const t of data.tables) nodes.set(t.id, { ...t, type: "table", columns: t.columns || [] });
+  for (const e of data.enums || []) nodes.set(e.id, { ...e, type: "enum", focus: true, columns: (e.values || []).map((v) => ({ name: v })) });
+
+  const schemaCount = {};
+  for (const n of nodes.values()) if (n.type === "table") schemaCount[n.schema] = (schemaCount[n.schema] || 0) + 1;
+  const mainSchema = Object.entries(schemaCount).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  const edges = [];
+  for (const t of nodes.values()) {
+    if (t.type !== "table") continue;
+    for (const c of t.columns) {
+      for (const f of c.fk || []) {
+        if (!nodes.has(f.table)) continue;
+        edges.push({ kind: "fk", from: t.id, fromCol: c.name, to: f.table, toCol: f.column });
+      }
+      if (c.enum && nodes.has(c.enum)) edges.push({ kind: "enum", from: t.id, fromCol: c.name, to: c.enum, toCol: null });
+    }
+  }
+  const endpointCols = new Map();
+  for (const e of edges) {
+    if (!endpointCols.has(e.from)) endpointCols.set(e.from, new Set());
+    if (!endpointCols.has(e.to)) endpointCols.set(e.to, new Set());
+    endpointCols.get(e.from).add(e.fromCol);
+    if (e.toCol) endpointCols.get(e.to).add(e.toCol);
+  }
+
+  // ---------- Saved view (per viewer, best effort) ----------
+  // An Artifact has its own storage, so one key holds its layout, and a table added later leaves the rest where they were.
+  const KEY = "schema-canvas:v3";
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch { return null; } };
+  const saved = load();
+  const store = () => { try { localStorage.setItem(KEY, JSON.stringify({ pos, folded, view, showNeighbours })); } catch { /* storage blocked: the canvas still works */ } };
+  const forget = () => { try { localStorage.removeItem(KEY); } catch { /* nothing stored */ } };
+
+  const pos = {}, folded = {};
+  let view = { x: 40, y: 40, z: 1 };
+  let showNeighbours = saved?.showNeighbours ?? true;
+  let selected = null, hover = null;
+  const pointers = new Map(); // the pointers now down on the canvas
+
+  // ---------- Header ----------
+  const tables = [...nodes.values()].filter((n) => n.type === "table");
+  const focusCount = tables.filter((t) => t.focus !== false).length;
+  const neighbourCount = tables.length - focusCount;
+  const fkCount = edges.filter((e) => e.kind === "fk").length;
+  $("title").textContent = data.title || "Schema";
+  if (document.title.includes("__SCHEMA")) document.title = data.title || "Schema";
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  $("summary").textContent = [plural(focusCount, "table"), neighbourCount ? plural(neighbourCount, "neighbour") : "", plural(fkCount, "relationship")].filter(Boolean).join(" · ");
+  $("source").textContent = data.source || (data.database ? `database ${data.database}` : "");
+  if (!neighbourCount) $("neighbours").hidden = true;
+
+  // ---------- Legend ----------
+  const line = (kind) => `<svg width="40" height="14" class="edge ${kind}"><path d="M0 7H40"/></svg>`;
+  const anyChange = [...nodes.values()].some((n) => n.change || n.columns.some((c) => c.change));
+  $("legend-list").innerHTML = [
+    [`<span class="ic pk" style="color:var(--chg)">${ICON.key}</span>`, "Primary key"],
+    [`<span style="color:var(--accent)">${ICON.link}</span>`, "Foreign key column"],
+    ['<span style="font-family:var(--font-data)">int8<span style="color:var(--edge)">?</span></span>', "Nullable"],
+    [line("fk"), "Foreign key link"],
+    ...(data.enums?.length ? [[line("enum"), "Uses an enum type"]] : []),
+    ...(anyChange ? [
+      ['<span class="sw" style="border-color:var(--add);background:var(--add-soft)"></span>', "Added by this change"],
+      ['<span class="sw" style="border-color:var(--chg);background:var(--chg-soft)"></span>', "Changed by this change"],
+      ['<span class="sw" style="border-color:var(--del);background:var(--del-soft)"></span>', "Removed by this change"],
+    ] : []),
+  ].map(([a, b]) => `<dt>${a}</dt><dd>${b}</dd>`).join("");
+  if (window.innerWidth > 1100 && window.innerHeight > 760) $("legend").open = true;
+
+  // ---------- Cards ----------
+  const els = new Map();
+  const changeChip = (c) => c === "added" ? '<span class="chip new">new</span>' : c === "removed" ? '<span class="chip gone">dropped</span>' : c === "changed" ? '<span class="chip edit">changed</span>' : "";
+
+  const colTitle = (c) => [
+    `${c.name}: ${c.type}${c.nullable ? ", nullable" : ", not null"}`,
+    c.pk && "primary key", c.unique && "unique", c.identity && "identity", c.generated && "generated",
+    c.default != null && `default ${c.default}`,
+    ...(c.fk || []).map((f) => `references ${f.table}.${f.column}${f.onDelete ? ` on delete ${f.onDelete}` : ""}`),
+    c.was && `was ${c.was}`, c.comment,
+  ].filter(Boolean).join("\n");
+
+  // Each foreign key says what it points at on its own row, even when that table is not drawn.
+  const relations = (n, c) => (c.fk || []).map((f) => {
+    const target = f.table.startsWith(mainSchema + ".") ? f.table.slice(mainSchema.length + 1) : f.table;
+    const one = f.one ?? (c.unique || (c.pk && n.columns.filter((k) => k.pk).length === 1));
+    const facts = [one ? "one to one" : "many to one", (f.optional ?? c.nullable) && "optional",
+      f.onDelete && `on delete ${f.onDelete}`].filter(Boolean).join(" · ");
+    return `<span class="rel"><span class="to">→ ${esc(target)}.${esc(f.column)}</span><br>${esc(facts)}</span>`;
+  }).join("");
+
+  for (const n of nodes.values()) {
+    const el = document.createElement("div");
+    const isNeighbour = n.type === "table" && n.focus === false;
+    el.className = `card${n.type === "enum" ? " enum" : ""}${isNeighbour ? " neighbour" : ""}${n.change ? " t-" + n.change : ""}`;
+    el.tabIndex = 0;
+    el.dataset.id = n.id;
+    el.setAttribute("role", "group");
+    el.setAttribute("aria-label", `${n.type === "enum" ? "enum" : n.kind || "table"} ${n.id}, ${plural(n.columns.length, n.type === "enum" ? "value" : "column")}`);
+    const schemaPrefix = n.schema && n.schema !== mainSchema ? `<span class="tschema">${esc(n.schema)}.</span>` : "";
+    const chips = [
+      n.type === "enum" && '<span class="chip">enum</span>',
+      n.kind && n.kind !== "table" && `<span class="chip">${esc(n.kind)}</span>`,
+      n.rls && `<span class="chip rls" title="Row level security on${n.policies?.length ? ":\n" + esc(n.policies.map((p) => `${p.cmd} · ${p.name}`).join("\n")) : ", no policies"}">RLS${n.policies ? " · " + n.policies.length : ""}</span>`,
+      changeChip(n.change),
+    ].filter(Boolean).join("");
+    const rows = n.columns.map((c) => {
+      if (n.type === "enum") return `<div class="row" data-col="${esc(c.name)}"><span class="ic">${ICON.dot}</span><span class="cname">${esc(c.name)}</span><span></span></div>`;
+      const icon = c.pk ? `<span class="ic pk">${ICON.key}</span>` : c.fk?.length ? `<span class="ic fk">${ICON.link}</span>` : c.enum ? `<span class="ic">${ICON.tag}</span>` : `<span class="ic"></span>`;
+      const flags = [c.unique && !c.pk && '<span class="flag">unique</span>', (c.identity || c.generated) && `<span class="flag">${c.identity ? "identity" : "generated"}</span>`].filter(Boolean).join("");
+      const was = c.change === "changed" && c.was ? `<span class="was">${esc(shortType(c.was))}</span>` : "";
+      return `<div class="row${c.pk ? " pk" : ""}${c.change ? " c-" + c.change : ""}" data-col="${esc(c.name)}" title="${esc(colTitle(c))}">${icon}<span class="cname">${esc(c.name)}</span><span class="ctype">${flags}${was}<span>${esc(shortType(c.type))}${c.nullable ? '<span class="q">?</span>' : ""}</span></span>${relations(n, c)}</div>`;
+    }).join("");
+    const note = n.note || n.comment;
+    el.innerHTML = `<div class="head"><span class="tname" title="${esc(n.id)}">${schemaPrefix}${esc(n.name)}</span><span class="chips">${chips}</span><button class="fold" type="button" aria-label="Show key columns only">${ICON.chevron}</button></div>${note ? `<div class="note" title="${esc(note)}">${esc(note)}</div>` : ""}<div class="rows">${rows}</div><button class="more" type="button" hidden></button>`;
+    world.appendChild(el);
+    const rowEls = {};
+    for (const r of el.querySelectorAll(".row")) rowEls[r.dataset.col] = r;
+    els.set(n.id, { el, rows: rowEls, node: n, neighbour: isNeighbour });
+  }
+
+  // A folded card keeps its keys, the columns an edge touches, and anything this change marks.
+  const keeps = (n, c) => n.type === "enum" || c.pk || c.change || endpointCols.get(n.id)?.has(c.name);
+  function applyFold(id) {
+    const { el, rows, node } = els.get(id);
+    const hideable = node.columns.filter((c) => !keeps(node, c));
+    const isFolded = !!folded[id] && hideable.length > 0;
+    el.classList.toggle("folded", isFolded);
+    for (const c of node.columns) rows[c.name].hidden = isFolded && !keeps(node, c);
+    const fold = el.querySelector(".fold"), more = el.querySelector(".more");
+    fold.hidden = hideable.length === 0;
+    fold.setAttribute("aria-label", isFolded ? "Show every column" : "Show key columns only");
+    fold.setAttribute("aria-expanded", String(!isFolded));
+    more.hidden = !isFolded;
+    more.textContent = `${plural(hideable.length, "more column")}`;
+  }
+  const enumUsers = new Map();
+  for (const e of edges) if (e.kind === "enum") enumUsers.set(e.to, [...(enumUsers.get(e.to) || []), e.from]);
+  // With neighbours off, an enum only they use goes with them.
+  const visible = (id) => showNeighbours || !(els.get(id).neighbour || enumUsers.get(id)?.every((u) => els.get(u).neighbour));
+
+  // ---------- View ----------
+  const zoomLevels = { min: 0.03, max: 2 };
+  function applyView() {
+    world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
+    let step = 20 * view.z;
+    while (step < 12) step *= 2;
+    canvas.style.backgroundSize = `${step}px ${step}px`;
+    canvas.style.backgroundPosition = `${view.x}px ${view.y}px`;
+    $("zlevel").textContent = Math.round(view.z * 100) + "%";
+  }
+  function zoomAt(cx, cy, z) {
+    const r = canvas.getBoundingClientRect();
+    const px = cx - r.left, py = cy - r.top;
+    const nz = Math.min(zoomLevels.max, Math.max(zoomLevels.min, z));
+    const wx = (px - view.x) / view.z, wy = (py - view.y) / view.z;
+    view = { x: px - wx * nz, y: py - wy * nz, z: nz };
+    applyView();
+  }
+  function fit(readable = false) {
+    const ids = [...els.keys()].filter(visible);
+    if (!ids.length) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const id of ids) {
+      const { el } = els.get(id), p = pos[id];
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x + el.offsetWidth); y1 = Math.max(y1, p.y + el.offsetHeight);
+    }
+    const r = canvas.getBoundingClientRect(), legend = $("legend"), key = legend.getBoundingClientRect();
+    const into = (left) => {
+      const pad = 32, width = r.width - left;
+      const z = Math.min(1, Math.max(zoomLevels.min, Math.min((width - pad * 2) / (x1 - x0), (r.height - pad * 2) / (y1 - y0))));
+      view = { z, x: left + (width - (x1 - x0) * z) / 2 - x0 * z, y: Math.max(pad, (r.height - (y1 - y0) * z) / 2) - y0 * z };
+    };
+    const underKey = () => ids.some((id) => {
+      const { el } = els.get(id), x = r.left + pos[id].x * view.z + view.x, y = r.top + pos[id].y * view.z + view.y;
+      return x < key.right && x + el.offsetWidth * view.z > key.left && y < key.bottom && y + el.offsetHeight * view.z > key.top;
+    });
+    into(0);
+    if (readable && view.z < 0.55) {
+      // Too small to read: open at a readable zoom on the focus tables instead of the whole slice.
+      const focus = ids.filter((id) => !els.get(id).neighbour);
+      const fx = Math.min(...focus.map((id) => pos[id].x)), fy = Math.min(...focus.map((id) => pos[id].y));
+      view = { z: 0.55, x: 32 - fx * 0.55, y: 32 - fy * 0.55 };
+    } else if (legend.open && underKey()) {
+      // Fit beside the key, or shut it where there is no room for both.
+      const left = key.right - r.left;
+      if (r.width - left >= 480) into(left);
+      else legend.open = false;
+    }
+    applyView();
+  }
+
+  // ---------- Auto layout: referenced tables left of the tables that reference them ----------
+  // A hidden card measures nothing. layout() hides it again before the next paint.
+  const showAll = () => { for (const { el } of els.values()) el.hidden = false; };
+  function stack(ids, x, y) {
+    for (const id of ids) {
+      pos[id] = { x, y };
+      y += els.get(id).el.offsetHeight + 48;
+    }
+  }
+  function tidy() {
+    showAll();
+    const ids = [...els.keys()].filter(visible);
+    const targets = new Map(ids.map((id) => [id, new Set()]));
+    for (const e of edges) if (e.kind === "fk" && e.from !== e.to && targets.has(e.from) && targets.has(e.to)) targets.get(e.from).add(e.to);
+    const rank = new Map(), visiting = new Set();
+    const rankOf = (id) => {
+      if (rank.has(id)) return rank.get(id);
+      if (visiting.has(id)) return 0; // a cycle: break it here
+      visiting.add(id);
+      let r = 0;
+      for (const t of targets.get(id)) r = Math.max(r, rankOf(t) + 1);
+      visiting.delete(id);
+      rank.set(id, r);
+      return r;
+    };
+    const tableIds = ids.filter((id) => els.get(id).node.type === "table");
+    tableIds.forEach(rankOf);
+    for (const id of ids) if (els.get(id).node.type === "enum") {
+      const users = edges.filter((e) => e.to === id && rank.has(e.from)).map((e) => rank.get(e.from));
+      rank.set(id, (users.length ? Math.max(...users) : 0) + 1);
+    }
+    const cols = [];
+    for (const id of ids) (cols[rank.get(id)] ||= []).push(id);
+    const centreY = (id) => pos[id].y + els.get(id).el.offsetHeight / 2;
+    const placed = new Set();
+    let x = 0;
+    for (const col of cols.filter(Boolean)) {
+      // Order by the average height of what each table points at, so lines run as straight as they can.
+      const score = (id) => {
+        const peers = edges.filter((e) => (e.from === id && placed.has(e.to)) || (e.to === id && placed.has(e.from))).map((e) => centreY(e.from === id ? e.to : e.from));
+        return peers.length ? peers.reduce((a, b) => a + b, 0) / peers.length : Infinity;
+      };
+      const scored = col.map((id) => [id, score(id)]);
+      scored.sort((a, b) => a[1] - b[1] || (els.get(a[0]).neighbour - els.get(b[0]).neighbour) || a[0].localeCompare(b[0]));
+      const maxH = Math.max(1400, Math.sqrt(ids.length) * 360);
+      let y = 0, w = 0;
+      for (const [id] of scored) {
+        const { el } = els.get(id);
+        if (y > 0 && y + el.offsetHeight > maxH) { x += w + 120; y = 0; w = 0; }
+        pos[id] = { x, y };
+        y += el.offsetHeight + 48; w = Math.max(w, el.offsetWidth);
+        placed.add(id);
+      }
+      x += w + 140;
+    }
+    // Tables hidden for now wait in a column to the left, clear of the ones just placed.
+    const waiting = [...els.keys()].filter((id) => !visible(id));
+    stack(waiting, -140 - Math.max(0, ...waiting.map((id) => els.get(id).el.offsetWidth)), 0);
+    layout();
+  }
+
+  // ---------- Edges ----------
+  const HEAD = 19, ROW = 13.5; // a line meets the middle of a header or of a row's first line
+  function anchorY(id, col) {
+    const { rows } = els.get(id), p = pos[id], r = col && rows[col];
+    return r && !r.hidden ? p.y + r.offsetTop + ROW : p.y + HEAD;
+  }
+  function drawEdges() {
+    let out = "";
+    edges.forEach((e) => {
+      if (!visible(e.from) || !visible(e.to)) return;
+      const a = els.get(e.from).el, b = els.get(e.to).el, pa = pos[e.from], pb = pos[e.to];
+      const aw = a.offsetWidth, bw = b.offsetWidth;
+      let s1, s2;
+      if (e.from === e.to) { s1 = 1; s2 = 1; }
+      else if (pa.x + aw + 40 <= pb.x) { s1 = 1; s2 = -1; }
+      else if (pb.x + bw + 40 <= pa.x) { s1 = -1; s2 = 1; }
+      else { s1 = s2 = pa.x + aw / 2 <= pb.x + bw / 2 ? -1 : 1; }
+      const x1 = s1 > 0 ? pa.x + aw : pa.x, y1 = anchorY(e.from, e.fromCol);
+      const x2 = s2 > 0 ? pb.x + bw : pb.x, y2 = anchorY(e.to, e.toCol);
+      let c1, c2;
+      if (s1 === s2) {
+        const edgeX = s1 > 0 ? Math.max(x1, x2) + 48 : Math.min(x1, x2) - 48;
+        c1 = edgeX; c2 = edgeX;
+      } else {
+        const k = Math.max(48, Math.abs(x2 - x1) / 2);
+        c1 = x1 + s1 * k; c2 = x2 + s2 * k;
+      }
+      const d = `M${x1} ${y1}C${c1} ${y1} ${c2} ${y2} ${x2} ${y2}`;
+      const hovered = !!hover && ((e.from === hover.id && e.fromCol === hover.col) || (e.to === hover.id && e.toCol === hover.col));
+      const isHot = hovered || (!!selected && (e.from === selected || e.to === selected));
+      const isDim = !isHot && (selected || hover);
+      out += `<g class="edge${e.kind === "enum" ? " enum" : ""}${isHot ? " hot" : ""}${isDim ? " dim" : ""}"><path d="${d}"/></g>`;
+    });
+    svg.innerHTML = out;
+  }
+
+  function paintState() {
+    const related = new Set();
+    if (selected) {
+      related.add(selected);
+      for (const e of edges) if (e.from === selected || e.to === selected) { related.add(e.from); related.add(e.to); }
+    }
+    const hotRows = new Set();
+    if (hover) {
+      hotRows.add(hover.id + "\u0000" + hover.col);
+      for (const e of edges) {
+        if (e.from === hover.id && e.fromCol === hover.col && e.toCol) hotRows.add(e.to + "\u0000" + e.toCol);
+        if (e.to === hover.id && e.toCol === hover.col) hotRows.add(e.from + "\u0000" + e.fromCol);
+      }
+    }
+    for (const [id, { el, rows }] of els) {
+      el.hidden = !visible(id);
+      el.classList.toggle("selected", id === selected);
+      el.classList.toggle("dim", !!selected && !related.has(id));
+      for (const [col, r] of Object.entries(rows)) r.classList.toggle("hot", hotRows.has(id + "\u0000" + col));
+    }
+  }
+
+  let frame = 0;
+  function layout() {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      for (const [id, { el }] of els) { el.style.left = pos[id].x + "px"; el.style.top = pos[id].y + "px"; }
+      paintState();
+      drawEdges();
+    });
+  }
+
+  // ---------- Interaction ----------
+  let toastTimer = 0;
+  function toast(msg) {
+    const t = $("toast");
+    t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
+  }
+  function select(id) { selected = id; layout(); }
+
+  for (const [id, { el }] of els) {
+    el.addEventListener("pointermove", (ev) => {
+      if (pointers.size) return;
+      const row = ev.target.closest(".row");
+      const next = row ? { id, col: row.dataset.col } : null;
+      if (next?.col !== hover?.col || next?.id !== hover?.id) { hover = next; layout(); }
+    });
+    el.addEventListener("pointerleave", () => { if (!pointers.size && hover) { hover = null; layout(); } });
+    el.addEventListener("keydown", (ev) => {
+      const step = ev.shiftKey ? 48 : 8;
+      const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[ev.key];
+      if (move && ev.target === el) {
+        ev.preventDefault();
+        pos[id] = { x: pos[id].x + move[0], y: pos[id].y + move[1] };
+        selected = id; layout(); store();
+      } else if ((ev.key === "Enter" || ev.key === " ") && ev.target === el) {
+        ev.preventDefault(); select(selected === id ? null : id);
+      }
+    });
+    el.addEventListener("focusin", () => { if (document.activeElement.matches(":focus-visible")) reveal(id); });
+    const toggleFold = () => { folded[id] = !folded[id]; applyFold(id); layout(); store(); };
+    el.querySelector(".fold").addEventListener("click", toggleFold);
+    el.querySelector(".more").addEventListener("click", () => { toggleFold(); el.querySelector(".fold").focus(); });
+  }
+
+  // Tabbing to a table pans it into view.
+  function reveal(id) {
+    const r = canvas.getBoundingClientRect(), pad = 32, { el } = els.get(id);
+    const into = (at, size, room) => size + pad * 2 > room || at < pad ? pad : Math.min(at, room - size - pad);
+    const x = into(pos[id].x * view.z + view.x, el.offsetWidth * view.z, r.width);
+    const y = into(pos[id].y * view.z + view.y, el.offsetHeight * view.z, r.height);
+    view = { ...view, x: x - pos[id].x * view.z, y: y - pos[id].y * view.z };
+    applyView();
+  }
+
+  // One pointer drags the table under it or pans the background; a second turns either into a pinch.
+  let drag = null, pan = null, pinch = null, wheelTimer = 0;
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    // Capturing the pointer here would swallow the click on a card's own buttons.
+    if (ev.target.closest("button, .legend, .copybox, .toast")) return;
+    pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    canvas.setPointerCapture(ev.pointerId);
+    if (pointers.size === 1) {
+      const id = ev.target.closest(".card")?.dataset.id;
+      if (id) drag = { id, sx: ev.clientX, sy: ev.clientY, from: { ...pos[id] }, moved: false };
+      else {
+        pan = { sx: ev.clientX, sy: ev.clientY, ox: view.x, oy: view.y, moved: false };
+        canvas.classList.add("panning");
+      }
+    } else if (pointers.size === 2) {
+      if (drag) {
+        pos[drag.id] = drag.from;
+        els.get(drag.id).el.classList.remove("dragging");
+        layout();
+      }
+      drag = pan = null;
+      const [p, q] = [...pointers.values()];
+      pinch = { d: Math.max(1, Math.hypot(p.x - q.x, p.y - q.y)), z: view.z };
+    }
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    if (!pointers.has(ev.pointerId)) return;
+    pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (pinch && pointers.size === 2) {
+      const [p, q] = [...pointers.values()];
+      zoomAt((p.x + q.x) / 2, (p.y + q.y) / 2, pinch.z * Math.hypot(p.x - q.x, p.y - q.y) / pinch.d);
+    } else if (drag) {
+      const dx = ev.clientX - drag.sx, dy = ev.clientY - drag.sy;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      drag.moved = true;
+      els.get(drag.id).el.classList.add("dragging");
+      pos[drag.id] = { x: drag.from.x + dx / view.z, y: drag.from.y + dy / view.z };
+      layout();
+    } else if (pan) {
+      const dx = ev.clientX - pan.sx, dy = ev.clientY - pan.sy;
+      if (Math.hypot(dx, dy) > 3) pan.moved = true;
+      view = { ...view, x: pan.ox + dx, y: pan.oy + dy };
+      applyView();
+    }
+  });
+  const release = (ev) => {
+    if (!pointers.delete(ev.pointerId)) return;
+    if (drag) {
+      const { id, moved } = drag;
+      els.get(id).el.classList.remove("dragging");
+      if (moved) {
+        pos[id] = { x: Math.round(pos[id].x / 8) * 8, y: Math.round(pos[id].y / 8) * 8 };
+        layout();
+      } else if (ev.type === "pointerup") select(selected === id ? null : id);
+    } else if (pan && !pan.moved && ev.type === "pointerup") select(null);
+    drag = pan = null;
+    if (pointers.size < 2) pinch = null;
+    canvas.classList.remove("panning");
+    if (!pointers.size) store();
+  };
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
+  canvas.addEventListener("wheel", (ev) => {
+    if (ev.target.closest(".legend, .copybox")) return;
+    ev.preventDefault();
+    const unit = ev.deltaMode === 1 ? 16 : 1;
+    zoomAt(ev.clientX, ev.clientY, view.z * Math.exp(-ev.deltaY * unit * (ev.ctrlKey ? 0.01 : 0.0015)));
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(store, 300);
+  }, { passive: false });
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && selected) select(null); });
+
+  const zoomCentre = (f) => { const r = canvas.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, view.z * f); store(); };
+  $("zin").addEventListener("click", () => zoomCentre(1.2));
+  $("zout").addEventListener("click", () => zoomCentre(1 / 1.2));
+  $("fit").addEventListener("click", () => { fit(); store(); });
+  $("tidy").addEventListener("click", () => { tidy(); requestAnimationFrame(() => { fit(); store(); }); toast("Tables laid out by their foreign keys"); });
+  $("neighbours").setAttribute("aria-pressed", String(showNeighbours));
+  $("neighbours").addEventListener("click", (ev) => {
+    showNeighbours = !showNeighbours;
+    ev.currentTarget.setAttribute("aria-pressed", String(showNeighbours));
+    if (selected && !visible(selected)) selected = null;
+    layout(); store();
+  });
+  $("reset").addEventListener("click", () => { forget(); start(null); toast("Back to the original layout"); });
+  $("copy").addEventListener("click", () => {
+    const out = {};
+    for (const id of els.keys()) out[id] = { x: Math.round(pos[id].x), y: Math.round(pos[id].y) };
+    const text = JSON.stringify({ layout: out }, null, 1);
+    const fallback = () => { $("copytext").value = text; $("copybox").hidden = false; $("copytext").select(); };
+    try {
+      navigator.clipboard.writeText(text).then(() => toast("Layout copied. Paste it to Claude to keep it."), fallback);
+    } catch { fallback(); }
+  });
+  $("copyclose").addEventListener("click", () => { $("copybox").hidden = true; });
+
+  // ---------- Start ----------
+  function start(state) {
+    for (const id of els.keys()) {
+      folded[id] = state?.folded?.[id] ?? els.get(id).node.collapsed ?? els.get(id).neighbour;
+      applyFold(id);
+    }
+    showNeighbours = state?.showNeighbours ?? true;
+    $("neighbours").setAttribute("aria-pressed", String(showNeighbours));
+    selected = null; hover = null;
+    showAll();
+    const at = (p) => Number.isFinite(p?.x) && Number.isFinite(p?.y) ? { x: p.x, y: p.y } : null;
+    const unplaced = [];
+    for (const id of els.keys()) {
+      const p = at(state?.pos?.[id]) || at(els.get(id).node);
+      if (p) pos[id] = p; else unplaced.push(id);
+    }
+    if (unplaced.length === els.size) tidy();
+    else {
+      // What no layout places, such as an enum or a table added since, goes to the right of everything it does.
+      const placed = [...els.keys()].filter((id) => !unplaced.includes(id));
+      stack(unplaced, Math.max(...placed.map((id) => pos[id].x + els.get(id).el.offsetWidth)) + 140, Math.min(...placed.map((id) => pos[id].y)));
+      layout();
+    }
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (state?.view) { view = state.view; applyView(); } else fit(true);
+    }));
+  }
+  applyView();
+  const begin = () => start(saved);
+  if (document.fonts?.ready) document.fonts.ready.then(begin, begin); else begin();
+})();
+</script>

@@ -1984,6 +1984,34 @@ for f in "$PB"/*.md; do
   check "$(basename "$f" .md) has numbered steps starting at 1" grep -q '^1\. ' "$f"
 done
 
+section "schema"
+SC="$ROOT/method/skills/schema"
+fill() { # fill <json>: the page's data read back as a browser would, or fill.py's error
+  printf '%s' "$1" >"$T/schema.json"
+  rm -f "$T/schema.html"
+  { python3 -I "$SC/fill.py" "$SC/canvas.html" "$T/schema.json" "$T/schema.html" >/dev/null; } 2>&1 || return 1
+  sed -n 's#.*id="schema-data">\(.*\)</script>$#\1#p' "$T/schema.html"
+}
+slice() { jq -nc --argjson c "$1" '{title: "A & B", tables: [{id: "public.t", schema: "public", name: "t", comment: "<!-- <script> </script>", columns: [$c]}]}'; }
+out=$(fill "$(slice '{"name":"id","type":"bigint","fk":[{"table":"public.u","column":"id"}]}')")
+refute "a comment cannot open or close a tag in the page's data" grep -q '<' <<<"$out"
+eq "and reads back as it was written" "<!-- <script> </script>" "$(jq -r '.tables[0].comment' <<<"$out")"
+check "the title is escaped" grep -qx '<title>A &amp; B</title>' "$T/schema.html"
+out=$(fill '{"title":"__SCHEMA_JSON__","tables":[{"id":"a.t","schema":"a","name":"__SCHEMA_TITLE__"}]}')
+eq "a title or name that is a template marker is left as it is" "__SCHEMA_JSON__ __SCHEMA_TITLE__" \
+  "$(sed -n 's#^<title>\(.*\)</title>$#\1#p' "$T/schema.html") $(jq -r '.tables[0].name' <<<"$out")"
+for bad in '' '[]' 'null' '{}' '{"tables":[]}' "$(slice '{"name":"id","type":"bigint","fk":{"table":"public.u","column":"id"}}')" "$(slice '{"name":"id","type":"bigint","fk":[{"column":"id"}]}')" \
+  '{"tables":[{"id":"a.t","schema":"a","name":"t","policies":"members"}]}' '{"tables":[{"id":"a.t","schema":"a","name":"t","change":"add"}]}' \
+  '{"tables":[{"id":"a.t","schema":"a","name":"t"},{"id":"a.t","schema":"a","name":"t"}]}' '{"tables":[{"id":"a.t","schema":"a","name":"t","x":NaN}]}' \
+  '{"tables":[{"id":"a.t","schema":"a","name":"t","x":1e999}]}' '{"title":"\ud800","tables":[{"id":"a.t","schema":"a","name":"t"}]}'; do
+  out=$(fill "$bad")
+  eq "fill.py names the file and writes no page for ${bad:-an empty file}" "1 no" \
+    "$(grep -c "^fill.py: $T/schema.json: " <<<"$out") $([[ -e "$T/schema.html" ]] && echo yes || echo no)"
+done
+out=$(fill "$(printf '[%.0s' {1..100000})")
+eq "nor for nesting too deep to read" "1 no" "$(grep -c "^fill.py: $T/schema.json: " <<<"$out") $([[ -e "$T/schema.html" ]] && echo yes || echo no)"
+check "fill.py with no arguments prints its usage" grep -q '^usage: fill.py' <<<"$(python3 -I "$SC/fill.py" 2>&1)"
+
 section "release versions"
 REL="$T/release-repo"
 git init -q "$REL" && git -C "$REL" commit -q --allow-empty -m root
