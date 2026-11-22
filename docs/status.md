@@ -28,8 +28,8 @@ A change that would break a reader bumps `version`.
 | `playbook_hash` | string or null | the sha256 of `method/playbooks/<playbook>.md` when the run started, so runs that followed different versions of a playbook can be told apart; null when there is no such file |
 | `steps` | array | the playbook's steps, each `{title, state, reason, skip_code, attempts}`, with `state` one of `pending`, `doing`, `done` or `skipped`, and `skip_code` and `reason` set only on a skipped step |
 | `steps[].skip_code` | string or null | why a step was skipped: `not-applicable` (it does not apply to this task), `already-done` (its work was done earlier), `user-said` (the user said to skip it) or `blocked` (it cannot run here); `reason` holds the note given with it, null when there was none. A run started before skip codes has no `skip_code` key, and its skips keep their free-text `reason` |
-| `steps[].attempts` | array | one `{started_at, ended_at, state}` per time the step was set to `doing`; the open one has `ended_at` null and `state` `doing`, and a closed one says how it ended: `done`, `skipped`, `left` (another step was set to `doing`), `paused` or `ended` (the run stopped, gave up or ran out of budget). A step finished or skipped without being set to `doing` has none, and a run started before attempts were recorded has no `attempts` key |
-| `current` | number or null | the 1-based step being worked on, else the first one still open, else null |
+| `steps[].attempts` | array | one `{started_at, ended_at, state}` per time the step was set to `doing`; the open one has `ended_at` null and `state` `doing`, and a closed one says how it ended: `done`, `skipped`, `left` (another step was set to `doing`), `paused` or `ended` (the run stopped, gave up or ran out of budget). Step 1 is set to `doing` when the run starts. Any later step finished or skipped without being set to `doing` has none, and a run started before attempts were recorded has no `attempts` key |
+| `current` | number or null | the 1-based step being worked on, else the first one still open, else null; a run starts on step 1 |
 | `started_at`, `updated_at` | string | UTC, `YYYY-MM-DDTHH:MM:SSZ` |
 | `stale` | boolean | an active run whose tree had no live process at the last `keel sweep` |
 | `attention` | number | the count of rows in the run's `decisions.tsv` flagged for attention |
@@ -42,7 +42,7 @@ An archived run also has `ended_at` and `note`.
 
 ## Commands
 
-- `keel run start --playbook <name> --goal <text> [--steps <file>] [--replace]` starts a run in the current tree, with the playbook's numbered steps, word for word, read from the same version of the file its hash is taken from; `--steps <file>`, one step per line, gives them instead, as for a task no playbook fits. It refuses when an active or paused run holds the tree, unless `--replace`, which archives the old one as `stopped`.
+- `keel run start --playbook <name> --goal <text> [--steps <file>] [--replace]` starts a run in the current tree on step 1, with the playbook's numbered steps, word for word, read from the same version of the file its hash is taken from; `--steps <file>`, one step per line, gives them instead, as for a task no playbook fits. It refuses when an active or paused run holds the tree, unless `--replace`, which archives the old one as `stopped`.
 - `keel run step <n> doing|done|skip <code> [note] [--next]` moves a step on, and resumes a paused run; `--next` after `done` or a skip also starts step n+1 in the same update, and on the last step it is refused, changing nothing. A skip takes one of four codes, `not-applicable`, `already-done`, `user-said` or `blocked`, and any other is refused with the four listed.
 - `keel run pause` pauses the run; a resume note on stdin is kept in its folder as `resume.md`.
 - `keel run stop done|stopped|failed [--note <text>] [--tree <path>]` ends the run and archives it.

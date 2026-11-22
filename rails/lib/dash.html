@@ -292,7 +292,7 @@ const turns = s => s.turns.session + s.turns.subagents;
 const fmtTurns = n => n >= 10 ? String(Math.round(n)) : n.toFixed(1);
 const cacheShare = s => pct(s.tokens_by_kind.cache_read, tok(s)) + " cache reads";
 const invokedText = s => [s.invoked.typed ? "you typed it " + s.invoked.typed + "×" : "", s.invoked.agent ? "the agent called it " + s.invoked.agent + "×" : ""].filter(Boolean).join(", ");
-const where = s => !s.runs ? "not run in range" : s.name === "router" ? "before step 1 of every run" : s.name === "verify" ? "each keel-verifier spawned"
+const where = s => !s.runs ? "not run in range" : s.name === "router" ? "the start of every run" : s.name === "verify" ? "each keel-verifier spawned"
   : [s.where.join(", "), invokedText(s)].filter(Boolean).join("; ");
 const modelName = m => m.replace(/^claude-/, "").replace(/-(\d+)-(\d+)$/, " $1.$2");
 const sum = (xs, f) => xs.reduce((a, x) => a + f(x), 0);

@@ -7,7 +7,7 @@ into its output, only counts, run goals and step titles.
 
 A skill is counted from the playbook step that runs it, the `/name` its text
 runs "with", "through" or "run"; a step running none counts as
-`<playbook> step <n>`, the time before step 1 as the router, and each
+`<playbook> step <n>`, each run's start as the router, and each
 keel-verifier spawn as /verify. Tool calls, time and tokens are given to the
 step a run had in `doing` when they happened, found from the `keel run start`
 and `keel run step <n> doing` calls in the transcript, a `done` or `skip`
@@ -38,7 +38,7 @@ import sys
 from typing import TypedDict
 
 VERSION = 1
-CACHE_VERSION = 8
+CACHE_VERSION = 9
 # A gap between two messages longer than this is idle, not work.
 IDLE_S = 1800
 # A step runs the skill its text runs "with", "through" or "run"; a step that
@@ -400,8 +400,11 @@ def read_session(path: str, sid: str, starts: dict[str, list[dt.datetime]]) -> S
                     runs += 1
                     run_day = t.date().isoformat()
                     started.append(Start(playbook=started_pb, day=run_day, by=inv[0] if inv else "router"))
-                    playbook, step, run, entered, inv = started_pb, 0, f"{sid}:{runs}", set(), None
+                    # keel run start opens step 1, so its work is step 1's from
+                    # here; the router keeps a run per start and nothing else.
+                    playbook, step, run, entered, inv = started_pb, 1, f"{sid}:{runs}", {1}, None
                     bucket((playbook, 0), run_day)["runs"] += 1
+                    bucket((playbook, 1), run_day)["runs"] += 1
                 elif n_text and playbook is not None and int(n_text) != step:
                     n = int(n_text)
                     b = bucket((playbook, n), run_day)
