@@ -6,6 +6,7 @@ schema.json is introspect.sql's output, with title, source and any change marks 
 """
 import html
 import json
+import re
 import sys
 from typing import NoReturn
 
@@ -107,8 +108,12 @@ def main() -> None:
     except (ValueError, RecursionError) as e:
         fail(f"{data_path}: a value the page cannot hold: {e}")
     title = data.get("title") if isinstance(data, dict) else None
-    page = page.replace("__SCHEMA_TITLE__", html.escape(title if isinstance(title, str) and title else "Schema"))
-    page = page.replace("__SCHEMA_JSON__", payload)
+    # In one pass, so a title or comment that reads like a marker stays as it is.
+    fills = {
+        "__SCHEMA_TITLE__": html.escape(title if isinstance(title, str) and title else "Schema"),
+        "__SCHEMA_JSON__": payload,
+    }
+    page = re.sub("|".join(fills), lambda m: fills[m.group()], page)
     try:
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(page)

@@ -22,11 +22,18 @@ focus as (
   where r.schema = any(p.schemas)
     and ((p.tables is null and not r.relispartition) or r.name = any(p.tables) or r.schema || '.' || r.name = any(p.tables))
 ),
+-- Postgres copies a key onto each partition of either side. A copy on a partition of the referencing
+-- table is that partition's own key; one that points at a partition of the referenced table is not drawn.
+declared as (
+  select oid, confrelid as target, false as inherited from pg_constraint where contype = 'f' and conparentid = 0
+  union all
+  select con.oid, d.target, true from pg_constraint con join declared d on con.conparentid = d.oid
+),
 fks as (
-  select con.conrelid, con.confrelid, con.conkey, k.attnum, k.fattnum, con.confdeltype
+  select con.conrelid, con.confrelid, con.conkey, k.attnum, k.fattnum, con.confdeltype, d.inherited
   from pg_constraint con
+  join declared d on d.oid = con.oid and d.target = con.confrelid
   cross join lateral unnest(con.conkey, con.confkey) as k(attnum, fattnum)
-  where con.contype = 'f' and con.conparentid = 0 -- not the copy a partition inherits
 ),
 shown as (
   select oid, true as focus from focus
@@ -34,7 +41,7 @@ shown as (
   select f.oid, false from (
     select confrelid as oid from fks where conrelid in (select oid from focus)
     union
-    select conrelid from fks where confrelid in (select oid from focus)
+    select conrelid from fks where confrelid in (select oid from focus) and not inherited
   ) f where f.oid not in (select oid from focus)
 ),
 -- The key columns of each index that makes every row unique: not a partial or expression index,

@@ -39,6 +39,7 @@ Take the first source that exists, and name it in `source`:
 
    `schemas` is the comma-separated schemas to look in, and `tables` the slice, by name or `schema.name`; leave `tables` empty for every table in those schemas.
    Neighbours in other schemas, such as `auth.users`, come back on their own.
+  A partition comes back only when `tables` names it or a key points straight at it, with the keys it inherits; a key that points at its parent is drawn on the parent.
 2. **A database the repository starts.** When none is up, start it the way the repository does, `keel stack up` where it has one, and read it as above.
 3. **The schema files.** When no database can run, write the JSON by hand in the shape below, from the declarative source (`supabase/schemas/*.sql`, `schema.prisma`, Drizzle tables), or else from the migrations read in order.
    Set `source` to say it was read from files, since a hand reading can miss what the database would report.

@@ -1997,6 +1997,9 @@ out=$(fill "$(slice '{"name":"id","type":"bigint","fk":[{"table":"public.u","col
 refute "a comment cannot open or close a tag in the page's data" grep -q '<' <<<"$out"
 eq "and reads back as it was written" "<!-- <script> </script>" "$(jq -r '.tables[0].comment' <<<"$out")"
 check "the title is escaped" grep -qx '<title>A &amp; B</title>' "$T/schema.html"
+out=$(fill '{"title":"__SCHEMA_JSON__","tables":[{"id":"a.t","schema":"a","name":"__SCHEMA_TITLE__"}]}')
+eq "a title or name that is a template marker is left as it is" "__SCHEMA_JSON__ __SCHEMA_TITLE__" \
+  "$(sed -n 's#^<title>\(.*\)</title>$#\1#p' "$T/schema.html") $(jq -r '.tables[0].name' <<<"$out")"
 for bad in '' '[]' 'null' '{}' '{"tables":[]}' "$(slice '{"name":"id","type":"bigint","fk":{"table":"public.u","column":"id"}}')" "$(slice '{"name":"id","type":"bigint","fk":[{"column":"id"}]}')" \
   '{"tables":[{"id":"a.t","schema":"a","name":"t","policies":"members"}]}' '{"tables":[{"id":"a.t","schema":"a","name":"t","change":"add"}]}' \
   '{"tables":[{"id":"a.t","schema":"a","name":"t"},{"id":"a.t","schema":"a","name":"t"}]}' '{"tables":[{"id":"a.t","schema":"a","name":"t","x":NaN}]}' \

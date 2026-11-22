@@ -91,7 +91,7 @@ button { font: inherit; color: inherit; }
 }
 .canvas.panning { cursor: grabbing; }
 .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-.edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; max-width: none; overflow: visible; pointer-events: none; }
 
 .edge path { fill: none; stroke: var(--edge); stroke-width: 1.4; }
 .edge.enum path { stroke-dasharray: 4 4; }
