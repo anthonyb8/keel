@@ -1989,7 +1989,7 @@ SC="$ROOT/method/skills/schema"
 fill() { # fill <json>: the page's data read back as a browser would, or fill.py's error
   printf '%s' "$1" >"$T/schema.json"
   rm -f "$T/schema.html"
-  python3 -I "$SC/fill.py" "$SC/canvas.html" "$T/schema.json" "$T/schema.html" 2>&1 >/dev/null || return 1
+  { python3 -I "$SC/fill.py" "$SC/canvas.html" "$T/schema.json" "$T/schema.html" >/dev/null; } 2>&1 || return 1
   sed -n 's#.*id="schema-data">\(.*\)</script>$#\1#p' "$T/schema.html"
 }
 slice() { jq -nc --argjson c "$1" '{title: "A & B", tables: [{id: "public.t", schema: "public", name: "t", comment: "<!-- <script> </script>", columns: [$c]}]}'; }
