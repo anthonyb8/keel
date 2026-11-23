@@ -1514,9 +1514,10 @@ hook_handback() {
 # goes to $VERDICTS_DIR for every tree, where `keel verdict` reads it, and
 # into the run as well when an active run holds the tree.
 record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed it back>]
-  local tree dir verdict findings code at run category=null
+  local tree dir verdict findings code at run category=null branch
   tree=$(tree_of "$1" 2>/dev/null) || return 0
   code=$(git -C "$tree" rev-parse 'HEAD^{tree}' 2>/dev/null) || return 0
+  branch=$(git -C "$tree" symbolic-ref -q --short HEAD 2>/dev/null || true)
   verdict=$(grep -oE '^VERDICT: (pass|fail)[[:space:]]*$' <<<"$2" | tail -1 | cut -d' ' -f2 | tr -d '[:space:]' || true)
   findings=$(sed -n '/^VERDICT: /,$p' <<<"$2" | tail -n +2 | grep -v '^CATEGORY: ' | head -c 4000 || true)
   if [[ -z "$verdict" ]]; then
@@ -1540,8 +1541,9 @@ record_verdict() { # record_verdict <cwd> <report> [<id of the agent that handed
   run='{}'
   [[ "$(jq -r .state "$dir/status.json" 2>/dev/null)" == active ]] &&
     run=$(jq -c '{run_started_at: .started_at, playbook, step: .current}' "$dir/status.json")
-  jq -cn --arg v "$verdict" --argjson c "$category" --arg t "$code" --arg p "$tree" --arg now "$at" --argjson run "$run" \
-    '{at: $now, verdict: $v, category: $c, tree: $t, path: $p, run_started_at: null, playbook: null, step: null} + $run' >>"$STATE_DIR/verdicts.jsonl"
+  jq -cn --arg v "$verdict" --argjson c "$category" --arg t "$code" --arg p "$tree" --arg b "$branch" --arg now "$at" --argjson run "$run" \
+    '{at: $now, verdict: $v, category: $c, tree: $t, path: $p, branch: (if $b == "" then null else $b end),
+      run_started_at: null, playbook: null, step: null} + $run' >>"$STATE_DIR/verdicts.jsonl"
   [[ "$run" != '{}' ]] || return 0
   run_update "$dir" '.verifier = {verdict: $v, tree: $t, at: $now, findings: $f}' \
     --arg v "$verdict" --arg t "$code" --arg f "$findings"
@@ -1565,7 +1567,22 @@ verdict() { # verdict [--json]
   if [[ "$(jq -r .tree "$file")" != "$code" ]]; then
     die "the code changed since: HEAD is now ${code:0:12}; /verify again"
   fi
-  [[ "$(jq -r .verdict "$file")" == pass ]] || die "the verifier failed this code: fix each finding, then /verify again"
+  [[ "$(jq -r .verdict "$file")" == pass ]] && return 0
+  # The failed rounds since this branch last passed, so /verify knows when to stop.
+  # A detached HEAD has no branch to count on; a line that does not parse is
+  # skipped, as keel stats skips it, rather than zeroing the count.
+  local branch rounds=0
+  branch=$(git -C "$tree" symbolic-ref -q --short HEAD 2>/dev/null || true)
+  if [[ -n "$branch" && -f "$STATE_DIR/verdicts.jsonl" ]]; then
+    rounds=$(jq -nR --arg p "$tree" --arg b "$branch" '
+      [inputs | fromjson? | objects | select(.path == $p and .branch == $b)] | reverse
+      | (map(.verdict == "pass") | index(true)) // length' "$STATE_DIR/verdicts.jsonl")
+  fi
+  if ((rounds >= 3)); then
+    die "the verifier failed this code, failed round $rounds of 3 on $branch: stop and put the open findings to the user"
+  fi
+  ((rounds > 0)) || die "the verifier failed this code: fix each finding, then /verify again"
+  die "the verifier failed this code, failed round $rounds of 3 on $branch: fix each finding, then /verify again"
 }
 
 # `keel merge <squash|commit> [n]` is /merge's clear path as code: the user

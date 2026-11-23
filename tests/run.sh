@@ -1070,6 +1070,21 @@ check "a failing verdict fails it" bash -c "! (cd '$GR' && '$K' verdict >/dev/nu
 eq "the history keeps the pass before it, with no run fields outside a run" "pass null null null|fail null null null" \
   "$(jq -sr --arg p "$GR" '[.[] | select(.path == $p)][-2:] | map("\(.verdict) \(.run_started_at) \(.playbook) \(.step)") | join("|")' "$VH")"
 check "and shows the findings" grep -q "the parser drops the last row" <<<"$(vd)"
+# Failed rounds are counted per branch since its last pass, so /verify knows when to stop.
+eq "each verdict records the branch its tree was on" "$(git -C "$GR" branch --show-current)" "$(jq -sr --arg p "$GR" '[.[] | select(.path == $p)] | last | .branch' "$VH")"
+verifier_says $'Ran the tests.\nVERDICT: pass'
+verifier_says $'VERDICT: fail\nCATEGORY: behaviour\nfirst'
+check "a fail after a pass is the branch's first failed round" grep -q "failed round 1 of 3" <<<"$(vd)"
+verifier_says $'VERDICT: fail\nCATEGORY: behaviour\nsecond'
+echo '{"path": "cut off' >>"$VH"
+check "a history line that does not parse leaves the count alone" grep -q "failed round 2 of 3" <<<"$(vd)"
+sed -i '$d' "$VH"
+verifier_says $'VERDICT: fail\nCATEGORY: behaviour\nthird'
+check "the third says to stop and put the findings to the user" grep -q "failed round 3 of 3 on .*: stop and put the open findings to the user" <<<"$(vd)"
+check "and keel verdict still fails it" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"
+verifier_says $'Ran the tests.\nVERDICT: pass'
+verifier_says $'VERDICT: fail\nCATEGORY: suite\nagain'
+check "a pass starts the count again" grep -q "failed round 1 of 3" <<<"$(vd)"
 jq -n --arg c "$GR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"x",agent_type:"keel-agent",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
 check "outside a run too, only a keel-verifier's verdict is recorded" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"
 NV="$T/work/acme/never-verified"
