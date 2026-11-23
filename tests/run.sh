@@ -493,6 +493,21 @@ echo feature/g >"$T/keelpacks/acme/protected"
 eq "git-guard asks keel, not harness, for the protected list" "deny" "$(KEEL_PACKS="$T/keelpacks" guard "$G" "git merge develop")"
 rm "$PACK/protected"
 
+section "help"
+# --help on a command, or a command that needs a verb called bare, prints that
+# command's usage from keel's header and exits 0, doing nothing else.
+# e2e and sweep would otherwise run a container or a sweep, and merge a merge.
+for c in "stack --help" "linear" "ship -h" "run" "issue --help" "reflect" "merge" "e2e --help" "sweep --help"; do
+  # shellcheck disable=SC2086 # each case is its own words
+  res=$(cd "$T" && "$K" $c 2>&1; echo "exit $?")
+  word=${c%% *}
+  eq "\`keel $c\` prints only that command's usage and exits 0" "exit 0|keel $word|" \
+    "$(tail -1 <<<"$res")|$(head -1 <<<"$res" | awk '{print $1, $2}')|$(awk -v w="$word" '/^  keel / && $2 != w' <<<"$res")"
+done
+check "and the linear help lists its verbs" grep -q 'comment <ID> --body <file>' <<<"$("$K" linear --help)"
+eq "a help call is logged with exit 0" '["stack --help",0]' "$("$K" stack --help >/dev/null; tail -1 "$HOME/.local/state/keel/events.jsonl" | jq -c '[.cmd, .exit]')"
+refute "a verb still has to be a real one" "$K" stack bogus
+
 section "linear"
 # A stub Linear on a local port, which logs each request body and answers only
 # the stub key. ACME's pack names its team; OTHER gets team and key from the map.
@@ -1221,7 +1236,7 @@ eq "with no number it takes the current branch's PR" "current pr merge 12 --squa
 mreset
 touch "$T/gh/nopr"
 asks "with no number and no PR for the branch, it asks" "no PR for the current branch: name one" squash
-for bad in "" "rebase 12" "12" "squash x" "squash 12 13"; do
+for bad in "rebase 12" "12" "squash x" "squash 12 13"; do
   mreset
   # shellcheck disable=SC2086 # each case is its own words
   eq "\`keel merge $bad\` is a usage error, merging nothing" "1" "$(cd "$MR" && "$K" merge $bad >/dev/null 2>&1; echo $?)$(test -e "$T/gh/merge-calls" && echo " merged")"

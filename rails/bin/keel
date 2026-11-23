@@ -2052,6 +2052,18 @@ cmd="${1:-}"
 }
 shift
 
+# --help or -h on a command, or a command that needs a verb called bare, prints
+# that command's lines from the usage, with their continuations, and exits 0;
+# claude, stats, eval and hook answer their own.
+HELPED=" init version update rollback use pack base protected provision sweep linear template run status dash verdict verify-brief issue ship merge reflect stack e2e "
+NEEDS_VERB=" run linear stack ship issue merge reflect "
+if [[ "$HELPED" == *" $cmd "* ]] &&
+  { [[ "${1:-}" == --help || "${1:-}" == -h ]] || { (($# == 0)) && [[ "$NEEDS_VERB" == *" $cmd "* ]]; }; }; then
+  event_start "$cmd --help" "$@"
+  usage | awk -v c="$cmd" '/^  keel / {on = ($2 == c)} on && /^  /'
+  exit 0
+fi
+
 case "$cmd" in
 claude) CLAUDE_CONFIG_DIR="$HOME/.keel/claude" exec claude "$@" ;;
 init) init ;;
