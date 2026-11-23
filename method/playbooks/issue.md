@@ -11,7 +11,7 @@ When the conversation already holds a step's output for this issue, start after 
 3. Open its tree with `EnterWorktree name=<branchName>`, unless the session is already in a tree on that branch, and name the session `ABC-123 short slug`.
 4. Audit it with `/audit-issue` and stop for the answers to its open decisions **(stop)**.
 5. Mock up a UI change with `/mockup` and stop for approval of the design **(stop)**; skip it when the issue changes no UI.
-6. Build it with `/implement`.
+6. Build it with `/implement` in a fresh `keel-agent`, briefed as the skill's step 0 says.
 7. Audit the code with `/audit-code` in a fresh `keel-agent` that did not write it.
 8. Write its tests with `/write-tests`.
 9. Audit the tests with `/audit-tests` in a fresh `keel-agent` that did not write them.

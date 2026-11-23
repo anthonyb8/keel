@@ -693,10 +693,12 @@ eq "status follows docs/status.md version 1" "true" "$(st '.[0] | (["version","t
   and .version == 1
   and (.tree|type) == "string" and (.branch|type) == "string" and (.playbook|type) == "string"
   and (.goal|type) == "string" and (.state|IN("active","paused","done","stopped","failed"))
-  and (.steps|type) == "array" and all(.steps[]; (.title|type) == "string" and (.state|IN("pending","doing","done","skipped")) and has("reason") and has("skip_code") and .skip_code == null and .attempts == [])
+  and (.steps|type) == "array" and all(.steps[]; (.title|type) == "string" and (.state|IN("pending","doing","done","skipped")) and has("reason") and has("skip_code") and .skip_code == null and (.attempts|type) == "array")
   and (.current == null or (.current|type) == "number")
   and all(.started_at, .updated_at; test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and (.stale|type) == "boolean"
   and .attention == 0 and .done_check == null and .contract_hash == null and .verifier == null and .gate == null')"
+eq "start opens step 1 as current, with one open attempt and none on the other steps" '[1,"doing",[null],[0,0]]' \
+  "$(st '.[0] | [.current, .steps[0].state, [.steps[0].attempts[].ended_at], [.steps[1:][].attempts | length]]')"
 refute "a second run in the same tree is refused" in_r1 run start --playbook issue --goal g --steps "$T/steps.md"
 in_r1 run step 1 doing
 eq "a step being worked on is the current one" "1 doing" "$(st '.[0] | "\(.current) \(.steps[0].state)"')"
@@ -1307,7 +1309,7 @@ eq "a merge that broke logs exit 1 with its error" '[1,true]' "$(ev '[.exit, (.r
 mreset
 (cd "$MR" && "$K" run start --playbook issue --goal g --steps "$T/steps.md" >/dev/null && "$K" run step 2 doing)
 eq "keel run logs each call with its arguments, flags included, and the run's step after it" \
-  '[["run start",["start","--playbook","issue","--goal","g","--steps","'"$T"'/steps.md"],0,"issue",null],["run step",["step","2","doing"],0,"issue",2]]' \
+  '[["run start",["start","--playbook","issue","--goal","g","--steps","'"$T"'/steps.md"],0,"issue",1],["run step",["step","2","doing"],0,"issue",2]]' \
   "$(tail -2 "$EV" | jq -sc 'map([.cmd, .args, .exit, .playbook, .step])')"
 km squash 12 >/dev/null
 eq "inside a run it records the run's playbook and step" '["issue",2]' "$(ev '[.playbook, .step]')"
@@ -1475,10 +1477,11 @@ eq "a skill's tokens split by kind across its session and subagents, with a turn
 eq "a verifier's tokens by kind and turns are /verify's, in subagents" \
   '[{"cache_read":0,"cache_write":0,"input":0,"output":5000},{"session":0,"subagents":2}]' \
   "$(skill verify '[.tokens_by_kind, .turns]')"
-eq "a step naming no skill counts as the playbook's step, with going back to it a rerun" '[145,4,1,2]' \
+# The run starts on step 1, so the call between the start and `step 1 doing` is step 1's too.
+eq "a step naming no skill counts as the playbook's step, with going back to it a rerun" '[150,5,1,2]' \
   "$(skill "bug-fix step 1" '[.agent_s, .calls, .reruns, .runs]')"
-# m2's second line falls after its own `step 1 doing`, so a lost dedup shows in step 1, not the router.
-eq "a message split over two lines counts its tokens once" "440" "$(skill "bug-fix step 1" '.tokens.session')"
+# m2's two lines both fall in step 1, so a lost dedup shows as 660, not 550.
+eq "a message split over two lines counts its tokens once" "550" "$(skill "bug-fix step 1" '.tokens.session')"
 eq "a run's step carries its own tokens and turns, its subagents' included" \
   '[{"session":440,"subagents":1000},{"cache_read":660,"cache_write":228,"input":112,"output":440},{"session":4,"subagents":1}]' \
   "$(jq -cS '.playbooks[0].steps[4] | [.tokens, .tokens_by_kind, .turns]' <<<"$out")"
@@ -1601,6 +1604,10 @@ with open(sys.argv[1], "w") as f:
 EOF
 out=$(ks --json --repo inv)
 skill() { jq -cS --arg n "$1" ".skills[] | select(.name == \$n) | $2" <<<"$out"; }
+# The run starts, then step 4 closes with --next at 30s: the 10s and one turn between are step 1's.
+eq "a run's start opens step 1, so its opening work is step 1's and the router counts the run alone" \
+  '[["issue step 1",1,10,{"session":1,"subagents":0}],["router",1,0,{"session":0,"subagents":0}]]' \
+  "$(jq -c '[.skills[] | select(.name == "router" or .name == "issue step 1") | [.name, .runs, .agent_s, .turns]]' <<<"$out")"
 eq "a skill you type is one run, even when the agent then loads it, holding the work until its run starts" \
   '[21,["typed"],{"agent":0,"typed":1},1]' "$(skill pickup '[.agent_s, .how, .invoked, .runs]')"
 eq "and the run it starts says /pickup started it" '{"pickup":1}' "$(jq -cS '.playbooks[] | select(.name == "issue") | .started_by' <<<"$out")"

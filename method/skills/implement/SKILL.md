@@ -14,14 +14,27 @@ The repository's `CLAUDE.md` is the rulebook, and the pack's rules add to it.
 Where this skill disagrees with them, they win.
 Where existing code disagrees with them, the code is drift: bring what you touch up to standard, and leave the rest of the file alone.
 
+## 0. Build in a fresh agent
+
+Every turn here re-reads the whole conversation, and by the build this session already holds the router, the playbook and the audit with every file it read.
+Unless briefed as the build agent, do not build here: spawn a `keel-agent` and brief it with
+- the issue ID, the tree's path and the base branch;
+- the audit's write-up for the build, with the user's answers inlined: the scope map, the pattern to copy and the decisions, not the files the audit read;
+- the ticket's text when Linear was unreachable, and the approved mockup's link for a UI change;
+- that it is the build agent, and the instruction to read `~/.keel/claude/skills/implement/SKILL.md` and build as it says, from step 1.
+
+Relay its report, and leave the stack up for the journey test.
+When it hands back a question, put it to the user, then spawn a fresh build agent with the answer added to the brief.
+
 ## 1. Gather the inputs
 
 - The issue is the argument, else the one in this conversation, else the branch name's ID. With none, ask.
 - The spec is the issue, its comments, and the `/audit-issue` write-up with its answered decisions. Those decisions are settled; do not reopen them.
 - For a UI change, the mockup approved through `/mockup`, linked from the issue's comments: build to it, and name anything that has to differ and why.
-- With no audit in the conversation, say so and offer to run `/audit-issue` first. Building without one is the user's call, not a default.
+- With no audit in the conversation or the brief, say so and offer to run `/audit-issue` first. Building without one is the user's call, not a default.
 - Ask any decision still open now. Building on a guess about the data model is the most expensive mistake to undo.
 - `git status` and `git branch --show-current`. If the tree holds unrelated changes, ask before working alongside them.
+- Briefed as a build agent, hand each of these back to the session that spawned you, which asks the user; never stop to ask yourself.
 
 ## 2. Load the standards
 
@@ -60,10 +73,11 @@ A "planned, not built" statement this change makes true gets flipped.
 
 Report on the change itself, not the thinking behind it:
 
-- what was built, layer by layer, with the key files;
+- what was built, layer by layer, with every file changed;
 - what was reused rather than written, and what was left out as unneeded;
 - anything that differs from the audit, each with the fact that forced it, at `path:line`;
 - what was not verified: a suite not run, a role not checked, a stack that was not up;
+- the stack's URL and sign-in when it is up;
 - manual steps for release: env vars, dashboard settings, secrets.
 
 The code is audited next, by `/audit-code` in a fresh context, then the tests come through `/write-tests`. Do not commit.

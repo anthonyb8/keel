@@ -34,7 +34,7 @@ Each transcript's totals are cached under `~/.local/state/keel/stats-cache/`, ke
 ## How it counts
 
 - **A skill** runs in a playbook step when the step's text runs it "with", "through" or "run" `/name`, such as "Audit it with `/audit-issue`".
-  A step that only mentions one, such as "shipping is `/ship`", runs none and counts as `<playbook> step <n>`, as does a step naming nothing; the time before step 1 counts as `router`, and each `keel-verifier` spawn as `verify`; a step naming `/verify` counts as its playbook's own step, so `verify` holds verifier spawns alone.
+  A step that only mentions one, such as "shipping is `/ship`", runs none and counts as `<playbook> step <n>`, as does a step naming nothing; `keel run start` opens step 1, so `router` counts runs and no work; each `keel-verifier` spawn counts as `verify`; a step naming `/verify` counts as its playbook's own step, so `verify` holds verifier spawns alone.
 - **A skill invoked directly** counts too: one you typed as `/name`, or one the agent called through its Skill tool, when `name` is installed under `~/.keel/claude/skills/`.
   The invocation holds the calls, time and tokens that follow it until the next message you type or the run's next step, whichever comes first.
   An agent loading the skill you just typed is that same run, and a skill invoked inside the step that runs it adds its time to that skill but not another run.

@@ -1155,7 +1155,8 @@ run_start() {
   fi
   branch=$(git -C "$tree" symbolic-ref -q --short HEAD 2>/dev/null || echo "")
   mkdir -p "$dir"
-  # One step per non-empty line, a leading "1. " or "- " dropped.
+  # One step per non-empty line, a leading "1. " or "- " dropped. Step 1 opens
+  # with the run, so its work is counted as its own from the start.
   jq -n --arg tree "$tree" --arg branch "$branch" --arg playbook "$playbook" --arg goal "$goal" \
     --arg now "$(now)" --arg steps "$lines" --arg ph "$playbook_hash" '{
       version: 1, tree: $tree, branch: $branch, playbook: $playbook, goal: $goal,
@@ -1163,9 +1164,9 @@ run_start() {
       state: "active",
       steps: [$steps | split("\n")[] | sub("^\\s*([0-9]+[.)]|[-*])\\s+"; "") | select(test("\\S"))
               | {title: ., state: "pending", reason: null, skip_code: null, attempts: []}],
-      current: null, started_at: $now, updated_at: $now, stale: false,
+      current: 1, started_at: $now, updated_at: $now, stale: false,
       attention: 0, done_check: null, verifier: null, gate: null, contract_hash: null
-    }' | write_atomic "$dir/status.json"
+    } | .steps[0] |= (.state = "doing" | .attempts = [{started_at: $now, ended_at: null, state: "doing"}])' | write_atomic "$dir/status.json"
   if [[ -n "$contract" ]]; then
     cp "$contract" "$dir/contract.md"
     run_update "$dir" '.contract_hash = $h' --arg h "$(sha256sum "$dir/contract.md" | cut -d' ' -f1)"
