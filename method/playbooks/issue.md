@@ -21,7 +21,7 @@ When the conversation already holds a step's output for this issue, start after 
 
 Inside a project build, run by the `project` playbook, step 3 is already done in the project's tree, step 4 is already done when the issue's comments hold its answered audit decisions, and step 12 runs `/ship commit` instead of stopping, or `/ship pr` for the project's last issue, with a PR titled for the project whose body names every issue the branch built.
 
-Under a contract that grants them, go on instead of stopping before `/ship`: `/verify` until it passes, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does.
+Under a contract that grants them, go on instead of stopping before `/ship`: `/verify` until it passes, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does; three failed rounds stop the run instead, as `/verify` says.
 
 ## Reply
 

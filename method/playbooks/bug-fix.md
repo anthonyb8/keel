@@ -12,7 +12,7 @@ Fix a bug at its root, proven by a reproduction that fails before the fix and pa
 6. Make the repro the committed regression test, through `/write-tests` and `/e2e`.
 7. Stop ready for `/ship`: with an issue ID, the issue playbook's state handling applies; without one, offer `/spec` **(stop)**.
 
-Under a contract that grants them, go on instead of stopping before `/ship`: `/verify` until it passes, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does.
+Under a contract that grants them, go on instead of stopping before `/ship`: `/verify` until it passes, then commit, push and open a draft PR as the grants allow, as the autonomous-run playbook does; three failed rounds stop the run instead, as `/verify` says.
 
 ## Reply
 

@@ -493,6 +493,21 @@ echo feature/g >"$T/keelpacks/acme/protected"
 eq "git-guard asks keel, not harness, for the protected list" "deny" "$(KEEL_PACKS="$T/keelpacks" guard "$G" "git merge develop")"
 rm "$PACK/protected"
 
+section "help"
+# --help on a command, or a command that needs a verb called bare, prints that
+# command's usage from keel's header and exits 0, doing nothing else.
+# e2e and sweep would otherwise run a container or a sweep, and merge a merge.
+for c in "stack --help" "linear" "ship -h" "run" "issue --help" "reflect" "merge" "e2e --help" "sweep --help"; do
+  # shellcheck disable=SC2086 # each case is its own words
+  res=$(cd "$T" && "$K" $c 2>&1; echo "exit $?")
+  word=${c%% *}
+  eq "\`keel $c\` prints only that command's usage and exits 0" "exit 0|keel $word|" \
+    "$(tail -1 <<<"$res")|$(head -1 <<<"$res" | awk '{print $1, $2}')|$(awk -v w="$word" '/^  keel / && $2 != w' <<<"$res")"
+done
+check "and the linear help lists its verbs" grep -q 'comment <ID> --body <file>' <<<"$("$K" linear --help)"
+eq "a help call is logged with exit 0" '["stack --help",0]' "$("$K" stack --help >/dev/null; tail -1 "$HOME/.local/state/keel/events.jsonl" | jq -c '[.cmd, .exit]')"
+refute "a verb still has to be a real one" "$K" stack bogus
+
 section "linear"
 # A stub Linear on a local port, which logs each request body and answers only
 # the stub key. ACME's pack names its team; OTHER gets team and key from the map.
@@ -1055,6 +1070,21 @@ check "a failing verdict fails it" bash -c "! (cd '$GR' && '$K' verdict >/dev/nu
 eq "the history keeps the pass before it, with no run fields outside a run" "pass null null null|fail null null null" \
   "$(jq -sr --arg p "$GR" '[.[] | select(.path == $p)][-2:] | map("\(.verdict) \(.run_started_at) \(.playbook) \(.step)") | join("|")' "$VH")"
 check "and shows the findings" grep -q "the parser drops the last row" <<<"$(vd)"
+# Failed rounds are counted per branch since its last pass, so /verify knows when to stop.
+eq "each verdict records the branch its tree was on" "$(git -C "$GR" branch --show-current)" "$(jq -sr --arg p "$GR" '[.[] | select(.path == $p)] | last | .branch' "$VH")"
+verifier_says $'Ran the tests.\nVERDICT: pass'
+verifier_says $'VERDICT: fail\nCATEGORY: behaviour\nfirst'
+check "a fail after a pass is the branch's first failed round" grep -q "failed round 1 of 3" <<<"$(vd)"
+verifier_says $'VERDICT: fail\nCATEGORY: behaviour\nsecond'
+echo '{"path": "cut off' >>"$VH"
+check "a history line that does not parse leaves the count alone" grep -q "failed round 2 of 3" <<<"$(vd)"
+sed -i '$d' "$VH"
+verifier_says $'VERDICT: fail\nCATEGORY: behaviour\nthird'
+check "the third says to stop and put the findings to the user" grep -q "failed round 3 of 3 on .*: stop and put the open findings to the user" <<<"$(vd)"
+check "and keel verdict still fails it" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"
+verifier_says $'Ran the tests.\nVERDICT: pass'
+verifier_says $'VERDICT: fail\nCATEGORY: suite\nagain'
+check "a pass starts the count again" grep -q "failed round 1 of 3" <<<"$(vd)"
 jq -n --arg c "$GR" '{hook_event_name:"SubagentStop",cwd:$c,agent_id:"x",agent_type:"keel-agent",last_assistant_message:"VERDICT: pass"}' | $K hook subagent-stop
 check "outside a run too, only a keel-verifier's verdict is recorded" bash -c "! (cd '$GR' && '$K' verdict >/dev/null 2>&1)"
 NV="$T/work/acme/never-verified"
@@ -1221,7 +1251,7 @@ eq "with no number it takes the current branch's PR" "current pr merge 12 --squa
 mreset
 touch "$T/gh/nopr"
 asks "with no number and no PR for the branch, it asks" "no PR for the current branch: name one" squash
-for bad in "" "rebase 12" "12" "squash x" "squash 12 13"; do
+for bad in "rebase 12" "12" "squash x" "squash 12 13"; do
   mreset
   # shellcheck disable=SC2086 # each case is its own words
   eq "\`keel merge $bad\` is a usage error, merging nothing" "1" "$(cd "$MR" && "$K" merge $bad >/dev/null 2>&1; echo $?)$(test -e "$T/gh/merge-calls" && echo " merged")"
